@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Payables — Meridian AP{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Recorded payables</h1>
+  {% if rows %}
+  <table>
+    <thead>
+      <tr><th>#</th><th>Vendor</th><th>Invoice</th><th>Amount</th><th>Due</th><th>Entered</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r["id"] }}</td>
+        <td>{{ r["vendor"] }}</td>
+        <td><code>{{ r["invoice_number"] }}</code></td>
+        <td>{{ "%.2f"|format(r["amount"]) }}</td>
+        <td>{{ r["due_date"] }}</td>
+        <td class="muted">{{ r["entered_at"] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No payables recorded yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

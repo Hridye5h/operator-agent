@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Payable recorded — Meridian AP{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Payable recorded</h1>
+  <div class="ok" id="success-banner">
+    Payable <b id="record-id">#{{ record_id }}</b> created for
+    <b>{{ values.get('vendor','') }}</b>, invoice <code>{{ values.get('invoice_number','') }}</code>.
+  </div>
+  <table style="margin-top:18px">
+    <tbody>
+      <tr><th>Record ID</th><td id="r-id">{{ record_id }}</td></tr>
+      <tr><th>Vendor</th><td id="r-vendor">{{ values.get('vendor','') }}</td></tr>
+      <tr><th>Invoice</th><td id="r-invoice">{{ values.get('invoice_number','') }}</td></tr>
+      <tr><th>Amount</th><td id="r-amount">{{ values.get('amount','') }}</td></tr>
+      <tr><th>Due date</th><td id="r-due">{{ values.get('due_date','') }}</td></tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-top:16px"><a href="/">Back to payables</a></p>
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Record payable — Meridian AP{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Record a payable</h1>
+
+  {% if error %}
+  <div class="error" id="form-error">{{ error }}</div>
+  {% if transient %}<p class="muted">This is a temporary condition; the submission can be retried.</p>{% endif %}
+  {% endif %}
+
+  <form method="post" action="/new" id="payable-form">
+    <label for="vendor">Vendor</label>
+    <input type="text" id="vendor" name="vendor" value="{{ values.get('vendor','') }}" autocomplete="off">
+
+    <label for="invoice_number">Invoice number</label>
+    <input type="text" id="invoice_number" name="invoice_number" value="{{ values.get('invoice_number','') }}" autocomplete="off">
+
+    <label for="amount">Amount</label>
+    <input type="text" id="amount" name="amount" value="{{ values.get('amount','') }}" autocomplete="off">
+    <p class="muted">Plain decimal only — no currency symbol, commas or spaces.</p>
+
+    <label for="due_date">Due date</label>
+    <input type="text" id="due_date" name="due_date" value="{{ values.get('due_date','') }}" autocomplete="off">
+    <p class="muted">Format: YYYY-MM-DD</p>
+
+    <button type="submit" id="submit-payable">Record payable</button>
+  </form>
+</div>
+{% endblock %}
