@@ -81,6 +81,21 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _why_empty(response: Any) -> str:
+    """Explain an empty model response using whatever the SDK exposed."""
+    reason = getattr(response, "prompt_feedback", None)
+    blocked = getattr(reason, "block_reason", None) if reason is not None else None
+    if blocked:
+        return f"prompt blocked: {blocked}"
+
+    candidates = getattr(response, "candidates", None) or []
+    if candidates:
+        finish = getattr(candidates[0], "finish_reason", None)
+        if finish:
+            return f"finish_reason={finish}"
+    return "no candidates returned"
+
+
 class Planner(Protocol):
     name: str
 
@@ -90,15 +105,22 @@ class Planner(Protocol):
 class GeminiPlanner:
     """Real LLM planner."""
 
-    def __init__(self, model: str = "gemini-2.0-flash", api_key: str | None = None) -> None:
+    def __init__(self, model: str = "gemini-2.0-flash", api_key: str | None = None,
+                 client: Any = None, max_tokens: int = 1024) -> None:
+        self._model = model
+        self._max_tokens = max_tokens
+        self.name = f"gemini:{model}"
+
+        if client is not None:          # injected for tests; no key, no network
+            self._client = client
+            return
+
         from google import genai  # imported lazily so the offline path needs no SDK
 
         key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not key:
             raise RuntimeError("GEMINI_API_KEY is not set")
         self._client = genai.Client(api_key=key)
-        self._model = model
-        self.name = f"gemini:{model}"
 
     def decide(self, system: str, context: str) -> Decision:
         from google.genai import types
@@ -110,9 +132,18 @@ class GeminiPlanner:
                 system_instruction=system,
                 temperature=0.0,
                 response_mime_type="application/json",
+                max_output_tokens=self._max_tokens,
             ),
         )
-        return Decision.parse(response.text or "")
+
+        text = getattr(response, "text", None)
+        if not text:
+            # An empty body is not a parse problem, and reporting it as one
+            # sends the agent into a pointless re-prompt loop. Say what the
+            # model actually did: refused, ran out of tokens, or returned
+            # nothing.
+            raise RuntimeError(f"model returned no text ({_why_empty(response)})")
+        return Decision.parse(text)
 
 
 class ScriptedPlanner:

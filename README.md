@@ -152,6 +152,13 @@ from what it has actually seen — including noticing the ambiguity, choosing to
 escalate, and distinguishing a retriable failure from a permanent one. It reasons
 with rules instead of a model.
 
+The Gemini path is covered without a key by stubbing the HTTP client: the tests
+exercise the real planner against fenced, prose-wrapped, truncated and
+safety-blocked replies, and `test_integration_llm.py` drives a complete run from
+model output through the real browser to the verification read-back. A reply the
+agent cannot parse is re-prompted with the parse error rather than ending the
+run, because a model will occasionally answer with prose.
+
 It exists so that the loop, the recovery paths and the verification step are all
 testable and demonstrable without a network call. To use the real planner:
 
@@ -186,14 +193,17 @@ One of them is internally contradictory on purpose.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 36 tests, ~2s
+python -m pytest tests/ -q                # 85 tests, ~4s
+python -m pytest tests/ -m integration    # + a full run through the LLM path (~20s)
 ```
 
 | File | Covers |
 |---|---|
 | `test_agent_loop.py` | Loop invariants: verification cannot be skipped, failed verification is not success, retriable vs permanent, tool crashes survive, escalation stops the run, low confidence reroutes to a human, declined actions are never executed or re-asked, a broken policy fails closed |
 | `test_extraction.py` | All six invoices against ground truth, the columnar-layout regression, ambiguity reported not resolved |
+| `test_planner.py` | Parsing what a model actually sends (fenced, prose-wrapped, truncated, blocked), the Gemini request shape, and how the agent re-prompts an unusable reply |
 | `test_internal_app.py` | The environment's three failure modes behave as specified |
+| `test_integration_llm.py` | A full run driven by LLM-shaped replies against the real browser, server and verification read-back (marked `integration`) |
 
 The loop tests use stub tools, so they assert the agent's guarantees directly
 and run in milliseconds.

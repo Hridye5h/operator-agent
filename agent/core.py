@@ -67,6 +67,8 @@ class AgentConfig:
     confidence_floor: float = 0.4
     require_verification: bool = True
     verification_tool: str = "verify_payable"
+    #: How many times to re-prompt when a planner reply cannot be parsed.
+    planner_retries: int = 2
     #: Called before every tool invocation. Return a reason string to require
     #: human approval for that specific call, or None to allow it. This is how
     #: value thresholds and other policy live outside the loop.
@@ -121,11 +123,30 @@ class Agent:
         for step in range(self.config.max_steps):
             context = self._context(goal, observations, state)
 
-            try:
-                decision = self.planner.decide(SYSTEM_PROMPT, context)
-            except Exception as exc:
-                trace.add("error", f"planner failed: {type(exc).__name__}: {exc}")
-                return RunResult("failed", f"planner failed: {exc}", trace=trace, steps=step)
+            # A model will occasionally reply with prose, a truncated object, or
+            # nothing at all. That is a bad turn, not a dead run: show it the
+            # parse error and let it correct itself before giving up.
+            decision = None
+            planner_error: str | None = None
+            for attempt in range(self.config.planner_retries + 1):
+                probe = context if attempt == 0 else (
+                    f"{context}\n\nYOUR PREVIOUS REPLY COULD NOT BE USED: {planner_error}\n"
+                    "Reply with a single JSON object and nothing else."
+                )
+                try:
+                    decision = self.planner.decide(SYSTEM_PROMPT, probe)
+                    break
+                except Exception as exc:
+                    planner_error = f"{type(exc).__name__}: {exc}"
+                    trace.add("error",
+                              f"planner reply unusable "
+                              f"(attempt {attempt + 1}/{self.config.planner_retries + 1}): "
+                              f"{planner_error}")
+
+            if decision is None:
+                trace.finish("failed")
+                return RunResult("failed", f"planner failed: {planner_error}",
+                                 trace=trace, steps=step)
 
             # --- finish requested ---------------------------------------
             if decision.action == "finish":

@@ -182,3 +182,37 @@ decline is recorded against the action and its arguments, the same question is
 answered from memory, and a planner that keeps proposing the refused action is
 stopped with nothing written. `test_a_refusal_is_not_re_escalated_to_the_human`
 pins the count at one.
+
+---
+
+### 13. An unusable model reply is a bad turn, not a dead run
+
+A planner exception used to end the run immediately. That was fine while the
+only planner was deterministic; a real model answers with prose, a truncated
+object, or nothing at all often enough that it cannot be fatal.
+
+The loop now re-prompts with the parse error attached — *"your previous reply
+could not be used: ..."* — and only gives up after the retry budget. The same
+principle the tools follow: failure is an observation.
+
+**Rejected:** treating an empty response as a parse failure. An empty body
+usually means the prompt was safety-blocked or the reply hit the token limit,
+and re-prompting cannot fix either. `GeminiPlanner` inspects `prompt_feedback`
+and `finish_reason` and reports which it was, so the trace says *"prompt
+blocked: SAFETY"* rather than a misleading JSON error.
+
+---
+
+### 14. The LLM path is tested by injecting the client, not by mocking the planner
+
+`GeminiPlanner` takes an optional `client`, so the tests exercise the real
+planner — the request it builds, the config fields it sets, the response shapes
+it must survive — with no key and no network.
+
+**Rejected:** mocking `GeminiPlanner` itself. That would have tested the mock.
+The defect this guards against is precisely a wrong SDK call or a response shape
+nobody tried, and a mocked planner cannot catch either.
+
+`test_integration_llm.py` closes the loop: model-shaped replies, including
+fenced and prose-prefixed ones, drive the real browser against the real server
+through to the real verification read-back.
