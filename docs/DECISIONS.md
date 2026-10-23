@@ -149,3 +149,36 @@ by unit tests alone. "Handles retries" is cheap to claim and easy to fake with a
 `try/except` that never fires. Here the transient failure happens on every single
 run, so the recovery is visible in the trace and in the demo rather than being
 taken on trust.
+
+---
+
+### 11. Approval is enforced by the loop; the rule lives outside it
+
+`Tool.requires_approval` gates a whole tool. `AgentConfig.approval_policy` gates
+an individual call — the demo refuses to write a payable over ₹100,000 without
+sign-off.
+
+**Rejected:** putting the threshold in the agent, or in the planner's prompt.
+Money rules change, and they are not the agent's business. The loop enforces
+*that* a policy is consulted before every tool call; the policy decides *what*
+the rule is. A policy that raises is treated as a refusal, so a broken policy
+service cannot wave a payment through.
+
+**Rejected also:** trusting the prompt to mention approval. The tool catalogue
+advertises `[NEEDS APPROVAL]`, but an advertisement is not a control — before
+this was wired up, a planner that ignored the label would have written anyway.
+
+---
+
+### 12. A refusal is remembered
+
+The first implementation re-asked on every attempt. A planner that would not
+take no for an answer produced **twelve** approval prompts in one run before the
+step budget ran out.
+
+That is a real failure even though nothing was written: a system that
+interrogates a person until they give in has defeated the point of asking. Now a
+decline is recorded against the action and its arguments, the same question is
+answered from memory, and a planner that keeps proposing the refused action is
+stopped with nothing written. `test_a_refusal_is_not_re_escalated_to_the_human`
+pins the count at one.

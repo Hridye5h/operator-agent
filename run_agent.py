@@ -27,6 +27,27 @@ from tools.human import HumanChannel  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
+def value_threshold_policy(limit: float):
+    """Require human approval before recording a payable above ``limit``.
+
+    Lives here rather than in the loop: the agent enforces *that* policy is
+    consulted, this decides *what* the policy is.
+    """
+
+    def policy(action: str, args: dict) -> str | None:
+        if action != "submit_payable":
+            return None
+        try:
+            value = float(str(args.get("amount", "")).replace(",", ""))
+        except ValueError:
+            return "amount could not be read, so the value limit cannot be checked"
+        if value > limit:
+            return f"amount {value:,.2f} exceeds the {limit:,.0f} auto-approval limit"
+        return None
+
+    return policy
+
+
 SCENARIOS = {
     "happy": {
         "goal": "Find the latest invoice from Northwind Traders, extract the amount "
@@ -45,6 +66,27 @@ SCENARIOS = {
                 "and due date, record it as a payable in the internal AP system, and "
                 "confirm it was stored correctly.",
         "answers": None,     # nobody available -> must stop safely
+    },
+    # Over the auto-approval limit: the agent must get sign-off before writing.
+    "high_value": {
+        "goal": "Record invoice GX-88214 from Globex Industries as a payable in the "
+                "internal AP system and confirm it was stored correctly.",
+        "answers": {"Approve this action": "approve"},
+    },
+    # Same as high_value, but the approval is refused: nothing may be written.
+    "declined": {
+        "goal": "Record invoice GX-88214 from Globex Industries as a payable in the "
+                "internal AP system and confirm it was stored correctly.",
+        "answers": {"Approve this action": "decline"},
+    },
+    # Runs the same task twice in one process: the second pass must recognise the
+    # work is already done and confirm it rather than entering a duplicate.
+    "duplicate": {
+        "goal": "Find the latest invoice from Northwind Traders, extract the amount "
+                "and due date, record it as a payable in the internal AP system, and "
+                "confirm it was stored correctly.",
+        "answers": {},
+        "repeat": 2,
     },
 }
 
@@ -153,6 +195,8 @@ def main() -> int:
     ap.add_argument("--planner", choices=["auto", "gemini", "scripted"], default="auto")
     ap.add_argument("--headed", action="store_true", help="show the browser window")
     ap.add_argument("--max-steps", type=int, default=14)
+    ap.add_argument("--approval-limit", type=float, default=100000.0,
+                    help="payables above this need human approval (0 disables)")
     args = ap.parse_args()
 
     scenario = SCENARIOS[args.scenario]
@@ -167,46 +211,58 @@ def main() -> int:
     interactive = args.interactive
 
     planner, note = build_planner(args.planner)
-
-    trace = Trace(goal, root=ROOT / "runs")
-    if note:
-        trace.add("plan", f"planner downgraded: {note}")
-
-    print(f"\nrun {trace.run_id}  |  scenario={args.scenario}  |  planner={planner.name}")
-    print("-" * 72)
+    policy = value_threshold_policy(args.approval_limit) if args.approval_limit > 0 else None
+    passes = int(scenario.get("repeat", 1))
 
     proc = start_environment()
-    session = browser_tools.BrowserSession(headless=not args.headed,
-                                           artifacts=trace.artifacts_dir)
-    human = HumanChannel(interactive=interactive, preset=preset or {})
+    results = []
 
     try:
-        session.start()
-        registry = build_registry(session, human)
-        agent = Agent(planner, registry, AgentConfig(max_steps=args.max_steps))
-        result = agent.run(goal, trace)
+        for attempt in range(1, passes + 1):
+            trace = Trace(goal, root=ROOT / "runs")
+            if note:
+                trace.add("plan", f"planner downgraded: {note}")
+            if passes > 1:
+                trace.add("plan", f"pass {attempt} of {passes}")
+
+            label = f"  |  pass {attempt}/{passes}" if passes > 1 else ""
+            print(f"\nrun {trace.run_id}  |  scenario={args.scenario}  "
+                  f"|  planner={planner.name}{label}")
+            print("-" * 72)
+
+            session = browser_tools.BrowserSession(headless=not args.headed,
+                                                   artifacts=trace.artifacts_dir)
+            human = HumanChannel(interactive=interactive, preset=preset or {})
+            try:
+                session.start()
+                registry = build_registry(session, human)
+                agent = Agent(planner, registry,
+                              AgentConfig(max_steps=args.max_steps, approval_policy=policy))
+                result = agent.run(goal, trace)
+            finally:
+                session.stop()
+
+            report = trace.write_markdown()
+            results.append(result)
+
+            print("-" * 72)
+            print(f"status   : {result.status}")
+            print(f"verified : {result.verified}")
+            print(f"summary  : {result.summary}")
+            if result.evidence:
+                print(f"evidence : {result.evidence}")
+            if human.asked:
+                print(f"escalations: {len(human.asked)}")
+            print(f"trace    : {trace.dir / 'trace.json'}")
+            print(f"report   : {report}")
     finally:
-        session.stop()
         proc.terminate()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
 
-    report = trace.write_markdown()
-
-    print("-" * 72)
-    print(f"status   : {result.status}")
-    print(f"verified : {result.verified}")
-    print(f"summary  : {result.summary}")
-    if result.evidence:
-        print(f"evidence : {result.evidence}")
-    if human.asked:
-        print(f"escalations: {len(human.asked)}")
-    print(f"trace    : {trace.dir / 'trace.json'}")
-    print(f"report   : {report}")
-
-    return 0 if result.ok or result.status == "escalated" else 1
+    return 0 if all(r.ok or r.status == "escalated" for r in results) else 1
 
 
 if __name__ == "__main__":

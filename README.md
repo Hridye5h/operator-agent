@@ -5,8 +5,6 @@ browser against a company system that was never designed for an agent, recovers
 when things fail, asks a human when it genuinely cannot decide, and **verifies
 the outcome by reading it back** before it reports success.
 
-Built for the CentrAlign AI engineering problem statement.
-
 ```
 Goal → Understand → Plan → Execute → Observe → Adapt → Verify → Complete
 ```
@@ -34,12 +32,16 @@ No API key is required — see [Running without an API key](#running-without-an-
 
 | Command | What it demonstrates |
 |---|---|
-| `python run_agent.py --scenario happy` | End-to-end autonomy, including recovery from a transient system outage |
-| `python run_agent.py --scenario ambiguous` | The document contradicts itself; the agent escalates instead of guessing |
-| `python run_agent.py --scenario no_human` | Same ambiguity, nobody available — the agent **stops** rather than picking |
+| `--scenario happy` | End-to-end autonomy, including recovery from a transient system outage |
+| `--scenario ambiguous` | The document contradicts itself; the agent escalates instead of guessing |
+| `--scenario no_human` | Same ambiguity, nobody available — the agent **stops** rather than picking |
+| `--scenario high_value` | Payable over the approval limit; the agent gets sign-off before writing |
+| `--scenario declined` | Approval refused — nothing is written, and the human is not asked twice |
+| `--scenario duplicate` | Runs the task twice; the second pass confirms rather than double-entering |
 
 Useful flags: `--headed` (watch the browser), `--interactive` (answer escalations
-yourself), `--goal "..."` (any task), `--planner gemini|scripted`.
+yourself), `--goal "..."` (any task), `--planner gemini|scripted`,
+`--approval-limit 50000` (0 disables the approval policy).
 
 ---
 
@@ -122,6 +124,14 @@ contradictory totals, the extractor does not pick one — it reports an ambiguit
 and the agent asks. If nobody answers, the run ends as `escalated` with nothing
 written. Doing nothing is the correct result there.
 
+**Approval is policy, enforced by the loop.** A tool can declare
+`requires_approval`, and a configurable policy can gate any individual call —
+the demo requires human sign-off for payables over ₹100,000. The loop consults
+the policy; the policy decides the rule, so no money logic lives in the agent. A
+refusal is remembered: a declined action is never executed, never re-escalated
+to the same person, and a planner that keeps proposing it is stopped rather than
+allowed to spin. A policy that throws fails closed.
+
 ---
 
 ## Running without an API key
@@ -173,12 +183,12 @@ One of them is internally contradictory on purpose.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 29 tests, ~4s
+python -m pytest tests/ -q      # 36 tests, ~2s
 ```
 
 | File | Covers |
 |---|---|
-| `test_agent_loop.py` | Loop invariants: verification cannot be skipped, failed verification is not success, retriable vs permanent, tool crashes survive, escalation stops the run, low confidence reroutes to a human |
+| `test_agent_loop.py` | Loop invariants: verification cannot be skipped, failed verification is not success, retriable vs permanent, tool crashes survive, escalation stops the run, low confidence reroutes to a human, declined actions are never executed or re-asked, a broken policy fails closed |
 | `test_extraction.py` | All six invoices against ground truth, the columnar-layout regression, ambiguity reported not resolved |
 | `test_internal_app.py` | The environment's three failure modes behave as specified |
 

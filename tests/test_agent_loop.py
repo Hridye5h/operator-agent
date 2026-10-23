@@ -279,3 +279,155 @@ def test_human_answer_overrides_unresolved_amount(trace):
     agent.run("do the thing", trace)
 
     assert captured["amount"] == "96400.00"
+
+
+# -- approval gate ----------------------------------------------------------
+
+def over_limit(limit):
+    def policy(action, args):
+        if action != "submit_payable":
+            return None
+        if float(str(args.get("amount", 0)).replace(",", "")) > limit:
+            return f"amount exceeds the {limit:,.0f} limit"
+        return None
+    return policy
+
+
+def test_policy_requires_approval_before_a_large_write(trace):
+    written, asked = [], []
+
+    reg = make_registry(
+        ask_human=lambda **k: (asked.append(k.get("question", "")),
+                               ToolResult(True, data={"answer": "approve"}))[1],
+        submit_payable=lambda **k: (written.append(k),
+                                    ToolResult(True, data={"record_id": "1"}))[1],
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([
+        Decision("submit_payable", {"amount": "126500.00"}),
+        Decision("verify_payable", {}),
+        Decision("finish", {}),
+    ])
+    agent = Agent(planner, reg,
+                  AgentConfig(max_steps=6, approval_policy=over_limit(100000)))
+
+    result = agent.run("record it", trace)
+
+    assert len(asked) == 1 and "submit_payable" in asked[0]
+    assert len(written) == 1                      # approved, so it went through
+    assert result.status == "completed"
+
+
+def test_small_write_is_not_gated(trace):
+    asked = []
+    reg = make_registry(
+        ask_human=lambda **k: (asked.append(k), ToolResult(True, data={"answer": "approve"}))[1],
+        submit_payable=lambda **k: ToolResult(True, data={"record_id": "1"}),
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([
+        Decision("submit_payable", {"amount": "500.00"}),
+        Decision("verify_payable", {}),
+        Decision("finish", {}),
+    ])
+    agent = Agent(planner, reg,
+                  AgentConfig(max_steps=6, approval_policy=over_limit(100000)))
+
+    agent.run("record it", trace)
+
+    assert asked == []                            # under the limit, no interruption
+
+
+def test_declined_action_is_never_executed(trace):
+    written = []
+    reg = make_registry(
+        ask_human=lambda **k: ToolResult(True, data={"answer": "decline"}),
+        submit_payable=lambda **k: (written.append(k), ToolResult(True, data={"record_id": "1"}))[1],
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([Decision("submit_payable", {"amount": "126500.00"})] * 6)
+    agent = Agent(planner, reg,
+                  AgentConfig(max_steps=8, approval_policy=over_limit(100000)))
+
+    result = agent.run("record it", trace)
+
+    assert written == []                          # nothing was written
+    assert result.status == "escalated"
+    assert not result.verified
+
+
+def test_a_refusal_is_not_re_escalated_to_the_human(trace):
+    """Asking a person the same question six times is its own failure."""
+    asked = []
+    reg = make_registry(
+        ask_human=lambda **k: (asked.append(k), ToolResult(True, data={"answer": "decline"}))[1],
+        submit_payable=lambda **k: ToolResult(True, data={"record_id": "1"}),
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([Decision("submit_payable", {"amount": "126500.00"})] * 8)
+    agent = Agent(planner, reg,
+                  AgentConfig(max_steps=10, approval_policy=over_limit(100000)))
+
+    agent.run("record it", trace)
+
+    assert len(asked) == 1                        # asked once, remembered after
+
+
+def test_tool_declaring_requires_approval_is_gated(trace):
+    written, asked = [], []
+    reg = ToolRegistry()
+    reg.tool("dangerous", "stub", {"type": "object", "properties": {}},
+             requires_approval=True)(
+        lambda **k: (written.append(k), ToolResult(True, data={"ok": 1}))[1])
+    reg.tool("ask_human", "stub", {"type": "object", "properties": {}})(
+        lambda **k: (asked.append(k), ToolResult(True, data={"answer": "approve"}))[1])
+    reg.tool("verify_payable", "stub", {"type": "object", "properties": {}})(
+        lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"))
+
+    planner = SequencePlanner([
+        Decision("dangerous", {}),
+        Decision("verify_payable", {}),
+        Decision("finish", {}),
+    ])
+    agent = Agent(planner, reg, AgentConfig(max_steps=6))
+
+    agent.run("do it", trace)
+
+    assert len(asked) == 1                        # the declaration alone gated it
+    assert len(written) == 1
+
+
+def test_approval_with_no_human_channel_stops_the_run(trace):
+    written = []
+    reg = make_registry(
+        submit_payable=lambda **k: (written.append(k), ToolResult(True, data={"record_id": "1"}))[1],
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([Decision("submit_payable", {"amount": "126500.00"})] * 3)
+    agent = Agent(planner, reg,
+                  AgentConfig(max_steps=5, approval_policy=over_limit(100000)))
+
+    result = agent.run("record it", trace)
+
+    assert written == []
+    assert result.status == "escalated"
+
+
+def test_a_broken_policy_fails_closed(trace):
+    written = []
+
+    def exploding_policy(action, args):
+        raise ValueError("policy service down")
+
+    reg = make_registry(
+        ask_human=lambda **k: ToolResult(True, data={"answer": "decline"}),
+        submit_payable=lambda **k: (written.append(k), ToolResult(True, data={"record_id": "1"}))[1],
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([Decision("submit_payable", {"amount": "1.00"})] * 4)
+    agent = Agent(planner, reg,
+                  AgentConfig(max_steps=6, approval_policy=exploding_policy))
+
+    agent.run("record it", trace)
+
+    assert written == []        # a policy that errors must not wave the action through

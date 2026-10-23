@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from agent.llm import Decision, Planner
 from agent.tools import ToolRegistry, ToolResult
@@ -57,12 +57,19 @@ step to a human.
 """
 
 
+ApprovalPolicy = Callable[[str, dict[str, Any]], str | None]
+
+
 @dataclass
 class AgentConfig:
     max_steps: int = 14
     confidence_floor: float = 0.4
     require_verification: bool = True
     verification_tool: str = "verify_payable"
+    #: Called before every tool invocation. Return a reason string to require
+    #: human approval for that specific call, or None to allow it. This is how
+    #: value thresholds and other policy live outside the loop.
+    approval_policy: ApprovalPolicy | None = None
 
 
 @dataclass
@@ -104,6 +111,8 @@ class Agent:
         verified = False
         evidence: dict[str, Any] = {}
         last_error: str | None = None
+        granted: set[str] = set()
+        declined: dict[str, int] = {}
 
         trace.add("plan", f"planner={self.planner.name}, max_steps={self.config.max_steps}")
 
@@ -147,6 +156,23 @@ class Agent:
 
             # --- execute --------------------------------------------------
             args = self._bind(decision, state)
+
+            gate = self._approval_gate(decision.action, args, granted, declined, trace)
+            if gate is not None:
+                if gate == "no_human":
+                    trace.finish("escalated")
+                    return RunResult("escalated",
+                                     "action required approval but no one was available",
+                                     False, {}, trace, step)
+                if gate == "declined_loop":
+                    msg = (f"{decision.action} was declined and the planner kept "
+                           f"proposing it unchanged; stopping without writing.")
+                    trace.add("escalation", msg)
+                    trace.finish("escalated")
+                    return RunResult("escalated", msg, False, {}, trace, step)
+                observations.append(f"SYSTEM: {gate}")
+                continue
+
             trace.add("tool_call", f"{decision.action}({_fmt_args(args)})")
             result, elapsed = self.tools.invoke(decision.action, args)
 
@@ -180,6 +206,81 @@ class Agent:
         return RunResult("exhausted",
                          last_error or "ran out of steps before verifying the outcome",
                          verified, evidence, trace, self.config.max_steps)
+
+    # -- approval ----------------------------------------------------------
+    def _approval_gate(self, action: str, args: dict[str, Any],
+                       granted: set[str], declined: dict[str, int],
+                       trace: Trace) -> str | None:
+        """Hold an action until a human approves it.
+
+        Returns None to proceed, a message to feed back to the planner if the
+        action was declined, or one of two sentinels: ``"no_human"`` when nobody
+        was available to decide, and ``"declined_loop"`` when the planner keeps
+        re-proposing something already refused.
+
+        A decision is remembered for the run. Asking a person the same question
+        six times because the planner will not take no for an answer is its own
+        kind of failure, so a refused action is not re-escalated.
+
+        Two things can require approval: a tool that declares
+        ``requires_approval``, or the configured policy flagging this particular
+        call — which is how value thresholds work without putting money logic in
+        the loop.
+        """
+        tool = self.tools.get(action)
+        if tool is None:
+            return None
+
+        reason: str | None = None
+        if tool.requires_approval:
+            reason = f"{action} is marked as requiring approval"
+        elif self.config.approval_policy is not None:
+            try:
+                reason = self.config.approval_policy(action, args)
+            except Exception as exc:                     # a broken policy must fail closed
+                reason = f"approval policy raised {type(exc).__name__}: {exc}"
+
+        if not reason:
+            return None
+
+        key = f"{action}:{json.dumps(args, sort_keys=True, default=str)}"
+        if key in granted:
+            return None
+
+        # Already refused: answer from memory instead of asking again.
+        if key in declined:
+            declined[key] += 1
+            if declined[key] > 2:
+                return "declined_loop"
+            return (f"A human already declined {action} with these exact arguments. "
+                    f"Change the action or stop; it will not be approved by asking again.")
+
+        if "ask_human" not in self.tools:
+            trace.add("escalation", f"approval required ({reason}) but no human channel exists")
+            return "no_human"
+
+        trace.add("decision", f"approval required before {action}: {reason}")
+        verdict, _ = self.tools.invoke("ask_human", {
+            "question": (f"Approve this action?\n"
+                         f"  action: {action}({_fmt_args(args)})\n"
+                         f"  why approval is required: {reason}"),
+            "options": ["approve", "decline"],
+        })
+
+        if not verdict.ok:
+            trace.add("escalation", verdict.error or "approval unanswered")
+            return "no_human"
+
+        answer = str((verdict.data or {}).get("answer", "")).strip().lower()
+        if answer.startswith(("approve", "yes", "y", "ok")):
+            granted.add(key)
+            trace.add("decision", f"approved by human: {action}")
+            return None
+
+        declined[key] = 1
+        trace.add("decision", f"declined by human: {action} ({answer or 'no reason given'})")
+        return (f"A human declined {action}. Do not retry it unchanged; "
+                f"either adjust the action or stop.")
 
     # -- helpers -----------------------------------------------------------
     def _bind(self, decision: Decision, state: dict[str, Any]) -> dict[str, Any]:

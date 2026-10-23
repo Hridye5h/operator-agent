@@ -140,8 +140,13 @@ class ScriptedPlanner:
         if not seen("list_invoices("):
             return Decision("list_invoices", {}, "Need to see what documents exist.")
 
-        # 2. Read the newest matching document.
+        # 2. Read the document the goal points at: an explicit invoice number if
+        #    the request names one, otherwise the newest for that vendor.
         if not seen("read_invoice("):
+            number = _invoice_number_from_goal(context)
+            if number:
+                return Decision("read_invoice", {"invoice_number": number},
+                                f"The request names invoice {number}.")
             vendor = _vendor_from_goal(context)
             return Decision(
                 "read_invoice",
@@ -165,11 +170,36 @@ class ScriptedPlanner:
             return Decision("submit_payable", {"use_extracted": True},
                             "Enter the payable into the internal system.")
 
-        # 5. Recover from a failed submission.
-        if seen("ERROR (retriable)") and c.rfind("ERROR (retriable)") > c.rfind("submit_payable(") - 1:
-            if c.count("submit_payable(") < 4:
+        # 5. React to how the last submission actually went.
+        #    Everything after the final "submit_payable(" is that attempt's
+        #    outcome, which is more reliable than comparing index positions.
+        # A failed submission stays in the history for the rest of the run, so
+        # once verification has succeeded these recovery branches must stop
+        # firing or the agent will keep reacting to an error it already resolved.
+        last_submit = c.rfind("submit_payable(")
+        if last_submit != -1 and "VERIFIED" not in c:
+            outcome = c[last_submit:]
+
+            # Already on file: the work is done, so confirm rather than re-enter.
+            if "VAL-006" in outcome or "already recorded" in outcome:
+                return Decision("verify_payable", {"use_extracted": True},
+                                "Already recorded; confirming the existing record "
+                                "instead of entering a duplicate.")
+
+            # Temporary fault: the same call is worth repeating, within reason.
+            if "ERROR (retriable)" in outcome and c.count("submit_payable(") < 4:
                 return Decision("submit_payable", {"use_extracted": True, "retry": True},
                                 "Previous submission failed transiently; retrying.")
+
+            # Input rejected: repeating it unchanged cannot help.
+            if "ERROR (permanent)" in outcome and not seen("ask_human("):
+                return Decision(
+                    "ask_human",
+                    {"question": "The system rejected this submission and retrying "
+                                 "unchanged will not help. How should I proceed?"},
+                    "Permanent rejection needs a human decision.",
+                    confidence=0.2,
+                )
 
         # 6. Verify by reading back from the system of record.
         if not seen("verify_payable("):
@@ -177,6 +207,14 @@ class ScriptedPlanner:
                             "Confirm the record actually landed and matches.")
 
         return Decision("finish", {}, "Outcome verified.")
+
+
+def _invoice_number_from_goal(context: str) -> str:
+    """Pick an explicit document reference out of the request, if it names one."""
+    m = re.search(r"GOAL:\s*(.+)", context)
+    goal = m.group(1) if m else context
+    hit = re.search(r"\b([A-Z]{2}-[A-Z0-9]{2,}(?:-[A-Z0-9]+)*)\b", goal)
+    return hit.group(1) if hit else ""
 
 
 def _vendor_from_goal(context: str) -> str:

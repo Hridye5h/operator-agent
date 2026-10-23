@@ -229,8 +229,12 @@ def list_invoices(vendor: str = "") -> ToolResult:
     return ToolResult(True, data=f"{len(rows)} document(s):\n{listing}")
 
 
-def read_invoice(file: str = "", vendor: str = "", latest: bool = False) -> ToolResult:
-    """Extract fields from one invoice, selected by filename or by vendor+latest."""
+def read_invoice(file: str = "", vendor: str = "", latest: bool = False,
+                 invoice_number: str = "") -> ToolResult:
+    """Extract fields from one invoice.
+
+    Selected by filename, by invoice number, or by vendor plus ``latest``.
+    """
     path: pathlib.Path | None = None
 
     if file:
@@ -238,6 +242,13 @@ def read_invoice(file: str = "", vendor: str = "", latest: bool = False) -> Tool
         if not candidate.exists():
             return ToolResult(False, error=f"no such invoice file: {file}")
         path = candidate
+    elif invoice_number:
+        for p in sorted(INVOICE_DIR.glob("*.pdf")):
+            if (parse_invoice(p).invoice_number or "").upper() == invoice_number.strip().upper():
+                path = p
+                break
+        if path is None:
+            return ToolResult(False, error=f"no invoice found with number {invoice_number!r}")
     else:
         pool = []
         for p in sorted(INVOICE_DIR.glob("*.pdf")):

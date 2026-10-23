@@ -75,10 +75,12 @@ that the amount field hates commas.
 can be marked done, failed or re-planned. One-step-at-a-time is robust but has
 no notion of progress, which is what makes long tasks hard.
 
-**4. Policy and approval tiers.** `Tool.requires_approval` exists in the schema
-and is unused. The natural next step is a policy layer: value thresholds,
-per-tool rules, approvals routed to a named role rather than to whoever is at
-the terminal.
+**4. Richer approval routing.** Approval itself is implemented — tools can
+declare `requires_approval`, a configurable policy gates individual calls on
+value, refusals are remembered and never re-asked, and a broken policy fails
+closed. What is missing is *who* approves: today the question goes to whoever is
+at the terminal. Real use needs approvals routed to a named role, with
+delegation, timeouts and an audit record of who authorised what.
 
 **5. An evaluation harness.** A scenario suite scoring autonomy, verification
 rate, escalation precision and recovery rate, run on every change. Without it,
