@@ -22,6 +22,7 @@ Three properties are deliberate:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -113,6 +114,7 @@ class Agent:
         last_error: str | None = None
         granted: set[str] = set()
         declined: dict[str, int] = {}
+        stalls = 0
 
         trace.add("plan", f"planner={self.planner.name}, max_steps={self.config.max_steps}")
 
@@ -156,6 +158,19 @@ class Agent:
 
             # --- execute --------------------------------------------------
             args = self._bind(decision, state)
+
+            blocked = self._unresolved_block(decision.action, args, state)
+            if blocked:
+                stalls += 1
+                if stalls > 2:
+                    msg = ("a required value is still unresolved and the planner "
+                           "kept trying to write anyway; stopping without writing.")
+                    trace.add("escalation", msg)
+                    trace.finish("escalated")
+                    return RunResult("escalated", msg, False, {}, trace, step)
+                trace.add("decision", f"blocked {decision.action}: {blocked}")
+                observations.append(f"SYSTEM: {blocked}")
+                continue
 
             gate = self._approval_gate(decision.action, args, granted, declined, trace)
             if gate is not None:
@@ -206,6 +221,28 @@ class Agent:
         return RunResult("exhausted",
                          last_error or "ran out of steps before verifying the outcome",
                          verified, evidence, trace, self.config.max_steps)
+
+    # -- guards ------------------------------------------------------------
+    WRITE_PREFIXES = ("submit", "create", "update", "delete", "post", "send")
+
+    def _unresolved_block(self, action: str, args: dict[str, Any],
+                          state: dict[str, Any]) -> str | None:
+        """Refuse a write while a value it depends on is still in question.
+
+        Without this the agent submits a blank amount, the form rejects it, and
+        the run recovers — but it has already touched the system of record with
+        a request it knew was incomplete. Catching it here keeps a known-bad
+        write from leaving the agent at all.
+        """
+        if not state.get("unresolved"):
+            return None
+        if not action.startswith(self.WRITE_PREFIXES):
+            return None
+        missing = [k for k in ("amount",) if not str(args.get(k, "")).strip()]
+        if not missing:
+            return None
+        return (f"Refusing {action}: {', '.join(missing)} is still unresolved "
+                f"({state['unresolved']}). Resolve it with ask_human before writing.")
 
     # -- approval ----------------------------------------------------------
     def _approval_gate(self, action: str, args: dict[str, Any],
@@ -324,18 +361,26 @@ class Agent:
                 state["amount"] = f"{float(data['amount']):.2f}"
             if data.get("ambiguity"):
                 state["unresolved"] = data["ambiguity"]
+                candidates = data.get("amount_candidates", [])
+                state["amount_candidates"] = candidates
                 state["amount_options"] = [
-                    f"{c['label']}: {c['value']:.2f}" for c in data.get("amount_candidates", [])
+                    f"{c['label']}: {c['value']:.2f}" for c in candidates
                 ]
 
         elif action == "ask_human":
             answer = str(data.get("answer", ""))
-            number = _money_in(answer)
-            if number is not None:
-                state["amount"] = f"{number:.2f}"
+            resolved = _resolve_amount(answer, state.get("amount_candidates") or [])
+            if resolved is not None:
+                state["amount"] = f"{resolved:.2f}"
                 state.pop("unresolved", None)
                 state.pop("amount_options", None)
+                state.pop("amount_candidates", None)
             else:
+                # The reply did not name one of the amounts in question, so it is
+                # guidance, not a resolution. Inventing a figure from whatever
+                # digits it happens to contain would corrupt the ledger silently
+                # and still pass verification, since verification checks the
+                # write against intent and intent would already be wrong.
                 state["human_guidance"] = answer
 
         elif action.startswith("submit"):
@@ -343,16 +388,57 @@ class Agent:
                 state["record_id"] = data["record_id"]
 
 
-def _money_in(text: str) -> float | None:
-    import re
+MONEY_TOKEN = re.compile(r"\d[\d,]*(?:\.\d{1,2})?")
 
-    m = re.search(r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)", text.replace(" ", ""))
-    if not m:
-        return None
-    try:
-        return float(m.group(1).replace(",", ""))
-    except ValueError:
-        return None
+
+def _numbers_in(text: str) -> list[float]:
+    out = []
+    for raw in MONEY_TOKEN.findall(text):
+        try:
+            out.append(float(raw.replace(",", "")))
+        except ValueError:
+            pass
+    return out
+
+
+def _resolve_amount(answer: str, candidates: list[dict[str, Any]]) -> float | None:
+    """Interpret a human reply as a choice between known amounts.
+
+    A reply only resolves the ambiguity if it actually names one of the amounts
+    in question — by value, or by the label they were offered under. Anything
+    else is treated as guidance.
+
+    This is deliberately strict. A loose reading turns "see the email from 15
+    March" into a payable of 15.00, which would then pass verification, because
+    verification compares the write against intent and the intent would already
+    be wrong.
+    """
+    if not candidates:
+        # Nothing to choose between: accept only a reply that is purely an
+        # amount, so prose with a stray digit in it is not read as a figure.
+        stripped = answer.strip().replace("INR", "").replace("Rs.", "").lstrip("₹$").strip()
+        numbers = _numbers_in(stripped)
+        if len(numbers) != 1:
+            return None
+        residue = MONEY_TOKEN.sub("", stripped).strip(" .:-")
+        return numbers[0] if residue == "" else None
+
+    values = [(c.get("label", ""), float(c["value"])) for c in candidates if "value" in c]
+
+    # Named by value.
+    for number in _numbers_in(answer):
+        for _, value in values:
+            if abs(number - value) < 0.005:
+                return value
+
+    # Named by label ("the amended one", "printed total").
+    lowered = answer.lower()
+    for label, value in values:
+        words = [w for w in label.lower().replace("total", " ").split() if len(w) > 3]
+        if words and any(w in lowered for w in words):
+            return value
+
+    return None
 
 
 def _fmt_args(args: dict[str, Any]) -> str:

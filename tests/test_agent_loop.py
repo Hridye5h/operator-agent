@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from agent.core import Agent, AgentConfig  # noqa: E402
+from agent.core import Agent, AgentConfig, _resolve_amount  # noqa: E402
 from agent.llm import Decision  # noqa: E402
 from agent.tools import ToolRegistry, ToolResult  # noqa: E402
 from agent.trace import Trace  # noqa: E402
@@ -431,3 +431,109 @@ def test_a_broken_policy_fails_closed(trace):
     agent.run("record it", trace)
 
     assert written == []        # a policy that errors must not wave the action through
+
+
+# -- resolving an ambiguity safely -----------------------------------------
+
+CANDIDATES = [{"label": "printed total", "value": 118590.0},
+              {"label": "amended total", "value": 96400.0}]
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("amended total: 96400.00", 96400.0),
+    ("96400", 96400.0),
+    ("118,590.00", 118590.0),
+    ("use the printed one", 118590.0),
+    ("the amended figure", 96400.0),
+])
+def test_a_reply_naming_one_of_the_amounts_resolves_it(answer, expected):
+    assert _resolve_amount(answer, CANDIDATES) == expected
+
+
+@pytest.mark.parametrize("answer", [
+    "see the email from 15 March",     # would once have meant 15.00
+    "use invoice GX-90155 figure",     # would once have meant 90155.00
+    "the one from Q3",                 # would once have meant 3.00
+    "ask Priya in accounts",
+    "99999.00",                        # a figure that is not on the invoice
+])
+def test_prose_is_never_mistaken_for_an_amount(answer):
+    assert _resolve_amount(answer, CANDIDATES) is None
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("73219.00", 73219.0),
+    ("INR 73,219.00", 73219.0),
+    ("see the email from 15 March", None),
+    ("roughly 400 or so", None),
+])
+def test_with_no_candidates_only_a_bare_amount_counts(answer, expected):
+    assert _resolve_amount(answer, []) == expected
+
+
+def test_unhelpful_answer_does_not_produce_a_write(trace):
+    """The dangerous case: a reply with a stray digit becoming the payable.
+
+    It would also have passed verification, since verification compares the
+    write against intent and the intent would already be wrong.
+    """
+    written = []
+
+    reg = make_registry(
+        read_invoice=lambda **k: ToolResult(True, data={
+            "vendor": "Globex", "invoice_number": "GX-2", "due_date": "2026-09-10",
+            "amount": None, "ambiguity": "AMBIGUITY: two totals",
+            "amount_candidates": CANDIDATES,
+        }, display="AMBIGUITY: two totals"),
+        ask_human=lambda **k: ToolResult(True, data={"answer": "see the email from 15 March"},
+                                         display="human answered"),
+        submit_payable=lambda **k: (written.append(k),
+                                    ToolResult(True, data={"record_id": "1"}))[1],
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([
+        Decision("read_invoice", {}),
+        Decision("ask_human", {"question": "which amount?"}),
+        Decision("submit_payable", {"use_extracted": True}),
+        Decision("submit_payable", {"use_extracted": True}),
+        Decision("submit_payable", {"use_extracted": True}),
+        Decision("submit_payable", {"use_extracted": True}),
+    ])
+    agent = Agent(planner, reg, AgentConfig(max_steps=8))
+
+    result = agent.run("record it", trace)
+
+    assert written == []                      # nothing reached the system
+    assert result.status == "escalated"
+    assert not result.verified
+
+
+def test_a_resolving_answer_does_produce_the_right_write(trace):
+    written = []
+
+    reg = make_registry(
+        read_invoice=lambda **k: ToolResult(True, data={
+            "vendor": "Globex", "invoice_number": "GX-2", "due_date": "2026-09-10",
+            "amount": None, "ambiguity": "AMBIGUITY: two totals",
+            "amount_candidates": CANDIDATES,
+        }, display="AMBIGUITY: two totals"),
+        ask_human=lambda **k: ToolResult(True, data={"answer": "use the amended one"},
+                                         display="human answered"),
+        submit_payable=lambda **k: (written.append(k),
+                                    ToolResult(True, data={"record_id": "1"}))[1],
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([
+        Decision("read_invoice", {}),
+        Decision("ask_human", {"question": "which amount?"}),
+        Decision("submit_payable", {"use_extracted": True}),
+        Decision("verify_payable", {}),
+        Decision("finish", {}),
+    ])
+    agent = Agent(planner, reg, AgentConfig(max_steps=8))
+
+    result = agent.run("record it", trace)
+
+    assert len(written) == 1
+    assert written[0]["amount"] == "96400.00"
+    assert result.status == "completed"

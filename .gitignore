@@ -3,6 +3,6 @@ __pycache__/
 .env
 .venv/
 venv/
-runs/
+/runs/
 mockenv/internal_app/ap.db
 .pytest_cache/
