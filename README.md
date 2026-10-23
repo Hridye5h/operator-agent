@@ -5,6 +5,9 @@ browser against a company system that was never designed for an agent, recovers
 when things fail, asks a human when it genuinely cannot decide, and **verifies
 the outcome by reading it back** before it reports success.
 
+**[▶ Live run viewer](https://hridye5h.github.io/operator-agent/)** — three recorded
+runs, step by step, with the screenshots the agent's browser actually produced.
+
 ```
 Goal → Understand → Plan → Execute → Observe → Adapt → Verify → Complete
 ```
