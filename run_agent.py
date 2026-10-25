@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 
@@ -113,6 +114,15 @@ SCENARIOS = {
         "answers": {},
         "repeat": 2,
     },
+    # A different shape: several records in one run. No procedure describes a
+    # batch, so the deterministic planner cannot do it, and the loop will not
+    # let the run finish until every record written has been read back.
+    "batch": {
+        "goal": "Record every Northwind Traders invoice as a payable in the internal "
+                "AP system, and confirm each one was stored correctly.",
+        "answers": {},
+        "llm_only": True,
+    },
 
     # --- Vendor Master: a different task on the same agent -------------------
     "supplier": {
@@ -137,7 +147,20 @@ SCENARIOS = {
 }
 
 
+def port_in_use(port: int = 8099, host: str = "127.0.0.1") -> bool:
+    with socket.socket() as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
 def start_environment(reset: bool = True) -> subprocess.Popen:
+    # Without this, a server left behind by a killed run answers the health
+    # check, the new one fails to bind unseen, and the agent runs against
+    # whatever code and settings the old process started with.
+    if port_in_use():
+        raise RuntimeError(
+            "something is already listening on :8099, probably a server left by a "
+            "run that was killed. Stop it and try again.")
     env = dict(os.environ, FAIL_FIRST_SUBMIT=os.environ.get("FAIL_FIRST_SUBMIT", "1"))
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "mockenv.internal_app.app:app",
@@ -325,11 +348,20 @@ def main() -> int:
 
     load_env()
     planner, note = build_planner(args.planner)
+    if scenario.get("llm_only") and planner.name == "scripted":
+        print(f"scenario {args.scenario!r} needs the LLM planner: it is a batch, and the "
+              "deterministic planner only executes the one-record shape of a procedure. "
+              "Set GEMINI_API_KEY (see .env.example).")
+        return 2
     policy = value_threshold_policy(args.approval_limit) if args.approval_limit > 0 else None
     passes = int(scenario.get("repeat", 1))
     procedure = select_procedure(goal, load_procedures(PROCEDURES))
 
-    proc = start_environment()
+    try:
+        proc = start_environment()
+    except RuntimeError as exc:
+        print(f"cannot start the environment: {exc}")
+        return 2
     results = []
 
     try:

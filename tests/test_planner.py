@@ -395,3 +395,153 @@ def test_preset_answers_match_any_listed_phrasing():
     assert human.ask("Which total should I record?").data["answer"] == "96400.00"
     assert human.ask("Conflicting values for 'amount'").data["answer"] == "96400.00"
     assert not human.ask("Should I book a meeting?").ok
+
+
+# --------------------------------------------------------------------------
+# Daily quotas are per model
+# --------------------------------------------------------------------------
+
+def daily_quota():
+    return FakeAPIError(429, "RESOURCE_EXHAUSTED",
+                        "Generate content requests per day limit exceeded on Free Tier")
+
+
+class QuotaModels(ListingModels):
+    """Models whose daily quota has run out raise; the rest answer."""
+
+    def __init__(self, names, exhausted):
+        super().__init__(OK, names)
+        self.exhausted = set(exhausted)
+
+    def generate_content(self, *, model, contents, config):
+        self.calls.append({"model": model})
+        if model in self.exhausted:
+            raise daily_quota()
+        return OK
+
+
+class QuotaClient:
+    def __init__(self, names, exhausted):
+        self.models = QuotaModels(names, exhausted)
+
+
+def test_candidates_are_preferred_first_then_newest_general_flash(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    names = ["gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3.10-flash",
+             "gemini-2.5-flash", "gemini-3.8-flash-image", "gemini-3-flash-preview"]
+    planner = GeminiPlanner(client=QuotaClient(names, []))
+    assert planner.models == ["gemini-2.5-flash", "gemini-3.10-flash", "gemini-3.8-flash"]
+
+
+def test_a_used_up_daily_quota_moves_to_the_next_model(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    slept = []
+    client = QuotaClient(["gemini-2.5-flash", "gemini-3.8-flash"], ["gemini-2.5-flash"])
+    planner = GeminiPlanner(client=client, sleep=slept.append)
+
+    assert planner.decide("sys", "ctx").action == "finish"
+    assert planner.name == "gemini:gemini-3.8-flash"
+    assert planner.switches == [("gemini-2.5-flash", "gemini-3.8-flash")]
+    assert slept == []
+    assert [c["model"] for c in client.models.calls] == ["gemini-2.5-flash", "gemini-3.8-flash"]
+
+
+def test_when_every_model_is_used_up_the_error_surfaces(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    names = ["gemini-2.5-flash", "gemini-3.8-flash"]
+    planner = GeminiPlanner(client=QuotaClient(names, names), sleep=lambda s: None)
+    with pytest.raises(FakeAPIError):
+        planner.decide("sys", "ctx")
+
+
+def test_an_explicitly_chosen_model_is_never_swapped(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    client = QuotaClient(["gemini-2.5-flash", "gemini-3.8-flash"], ["gemini-2.5-flash"])
+    planner = GeminiPlanner(client=client)
+    with pytest.raises(FakeAPIError):
+        planner.decide("sys", "ctx")
+    assert planner.switches == []
+
+
+def test_the_trace_records_a_mid_run_model_switch(trace, monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    client = QuotaClient(["gemini-2.5-flash", "gemini-3.8-flash"], [])
+    replies = iter([response('{"action":"verify_payable","args":{}}'), OK])
+
+    def generate_content(*, model, contents, config):
+        client.models.calls.append({"model": model})
+        if model == "gemini-2.5-flash" and len(client.models.calls) > 1:
+            raise daily_quota()
+        return next(replies)
+
+    client.models.generate_content = generate_content
+    planner = GeminiPlanner(client=client)
+
+    result = Agent(planner, registry_with_verify(), AgentConfig(max_steps=5)).run("x", trace)
+
+    assert result.status == "completed"
+    plans = [s.summary for s in trace.steps if s.kind == "plan"]
+    assert "planner=gemini:gemini-3.8-flash (switched from gemini:gemini-2.5-flash)" in plans
+
+
+@pytest.mark.parametrize("code,status", [(503, "UNAVAILABLE"), (504, "DEADLINE_EXCEEDED")])
+def test_a_struggling_model_is_left_for_the_next_one(monkeypatch, code, status):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    slept = []
+    client = QuotaClient(["gemini-2.5-flash", "gemini-3.6-flash"], [])
+
+    def generate_content(*, model, contents, config):
+        client.models.calls.append({"model": model})
+        if model == "gemini-2.5-flash":
+            raise FakeAPIError(code, status)
+        return OK
+
+    client.models.generate_content = generate_content
+    planner = GeminiPlanner(client=client, sleep=slept.append)
+
+    assert planner.decide("sys", "ctx").action == "finish"
+    assert planner.name == "gemini:gemini-3.6-flash"
+    assert slept == []
+
+
+def test_every_request_carries_a_deadline(monkeypatch):
+    from google import genai
+
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(genai, "Client", FakeClient)
+    monkeypatch.setenv("GEMINI_MODEL", "m")
+    GeminiPlanner(api_key="test-key", request_timeout=45)
+    assert seen["http_options"].timeout == 45000
+
+    GeminiPlanner(api_key="test-key", request_timeout=2)     # server minimum is 10s
+    assert seen["http_options"].timeout == 10000
+
+
+def test_a_server_already_on_the_port_is_refused(monkeypatch):
+    import socket
+    import subprocess
+
+    import run_agent
+
+    listener = socket.socket()
+    try:
+        listener.bind(("127.0.0.1", 8099))
+    except OSError:
+        listener.close()
+        pytest.skip("port 8099 is busy")
+    listener.listen(1)
+
+    def must_not_start(*a, **k):
+        raise AssertionError("a second server was launched")
+
+    monkeypatch.setattr(subprocess, "Popen", must_not_start)
+    try:
+        with pytest.raises(RuntimeError, match="already listening"):
+            run_agent.start_environment()
+    finally:
+        listener.close()

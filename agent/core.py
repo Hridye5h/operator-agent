@@ -18,9 +18,10 @@ around them:
 
 * **Verification is mandatory.** A run cannot report success until a verify
   tool has read the outcome back from the system of record.
-* **Verification covers what was written.** Expectations are taken from the
-  arguments of the write that actually happened, not from whatever the planner
-  chose to pass, so a verify call cannot quietly check fewer fields.
+* **Verification covers what was written.** Every successful write must be
+  read back before the run can finish, and each verify call is checked against
+  the arguments of the write it names, not against whatever the planner chose
+  to pass, so a verify call cannot quietly check fewer fields or fewer records.
 * **Contested values cannot be guessed.** While a reader has reported a field
   as contested, no write that sets that field may run — whether the planner left
   it blank or filled in a value of its own. Only a human answer naming one of
@@ -66,8 +67,8 @@ rather than copying them.
 reasonable. A conflict means the target already exists: confirm it rather than \
 creating it again. If an error is permanent, change the arguments or the \
 approach — repeating it unchanged will fail again.
-- Before finishing you MUST verify the outcome by reading it back from the \
-system of record. Do not treat a success page as proof.
+- Before finishing you MUST verify every record you wrote by reading it back \
+from the system of record. Do not treat a success page as proof.
 - Set confidence below 0.4 when you are unsure; low confidence will route the \
 step to a human.
 - Reply with the JSON object only.
@@ -121,7 +122,8 @@ class Agent:
 
     # -- prompt assembly ---------------------------------------------------
     def _context(self, goal: str, observations: list[str], state: dict[str, Any],
-                 procedure: dict[str, Any] | None) -> str:
+                 procedure: dict[str, Any] | None,
+                 pending: list[dict[str, Any]] | None = None) -> str:
         parts = [f"GOAL: {goal}", ""]
         if procedure:
             parts += [render_procedure(procedure), ""]
@@ -129,6 +131,10 @@ class Agent:
         if state:
             parts += ["WORKING STATE (values you have actually established):",
                       json.dumps(state, indent=2, default=str), ""]
+        if pending:
+            parts += ["WRITES NOT YET VERIFIED (read each back before finishing):"]
+            parts += [f"  {w['tool']}({_fmt_args(w['args'])})" for w in pending]
+            parts.append("")
         parts.append("HISTORY:")
         parts += observations if observations else ["  (nothing yet)"]
         parts += ["", "What is the next single action? Reply with JSON only."]
@@ -147,19 +153,21 @@ class Agent:
         verified = False
         evidence: dict[str, Any] = {}
         last_error: str | None = None
-        last_write: dict[str, Any] | None = None
+        writes: list[dict[str, Any]] = []       # every successful write, in order
         granted: set[str] = set()
         declined: dict[str, int] = {}
         stalls = 0
         human = self.config.human_tool
 
-        trace.add("plan", f"planner={self.planner.name}, max_steps={self.config.max_steps}")
+        planner_name = self.planner.name
+        trace.add("plan", f"planner={planner_name}, max_steps={self.config.max_steps}")
         if procedure:
             trace.add("plan", f"procedure={procedure.get('name')}: "
                               f"{procedure.get('purpose', '')}".strip())
 
         for step in range(self.config.max_steps):
-            context = self._context(goal, observations, state, procedure)
+            pending = [w for w in writes if not w["verified"]]
+            context = self._context(goal, observations, state, procedure, pending)
 
             # A model will occasionally reply with prose, a truncated object, or
             # nothing at all. That is a bad turn, not a dead run: show it the
@@ -181,6 +189,11 @@ class Agent:
                               f"(attempt {attempt + 1}/{self.config.planner_retries + 1}): "
                               f"{planner_error}")
 
+            if self.planner.name != planner_name:
+                trace.add("plan", f"planner={self.planner.name} "
+                                  f"(switched from {planner_name})")
+                planner_name = self.planner.name
+
             if decision is None:
                 trace.finish("failed")
                 return RunResult("failed", f"planner failed: {planner_error}",
@@ -188,10 +201,17 @@ class Agent:
 
             # --- finish requested ---------------------------------------
             if decision.action == "finish":
-                if self.config.require_verification and not verified:
+                if self.config.require_verification and (not verified or pending):
                     which = self.config.verification_tool or "a verify tool"
-                    nudge = ("Refused to finish: the outcome has not been verified. "
-                             f"Call {which} first.")
+                    if pending:
+                        listed = "; ".join(f"{w['tool']}({_fmt_args(w['args'])})"
+                                           for w in pending)
+                        nudge = (f"Refused to finish: {len(pending)} write(s) not yet "
+                                 f"read back from the system of record: {listed}. "
+                                 f"Call {which} for each.")
+                    else:
+                        nudge = ("Refused to finish: the outcome has not been verified. "
+                                 f"Call {which} first.")
                     trace.add("decision", nudge)
                     observations.append(f"SYSTEM: {nudge}")
                     continue
@@ -218,7 +238,8 @@ class Agent:
 
             # --- bind arguments -----------------------------------------
             tool = self.tools.get(decision.action)
-            args = self._bind(decision, tool, state, last_write)
+            target = _target_write(tool, decision.args, writes)
+            args = self._bind(decision, tool, state, target)
 
             # --- guards -------------------------------------------------
             blocked = self._contested_block(tool, args, state)
@@ -268,13 +289,16 @@ class Agent:
                 self._absorb(kind, result, state)
 
                 if kind == "write":
-                    last_write = {"tool": decision.action, "args": dict(args)}
+                    writes.append({"tool": decision.action, "args": dict(args),
+                                   "verified": False})
 
                 if self._is_verification(decision.action):
                     verified = True
                     evidence = result.data if isinstance(result.data, dict) \
                         else {"result": result.data}
-                    coverage = _coverage(tool, args, last_write)
+                    if target is not None:
+                        _mark_verified(tool, target, writes)
+                    coverage = _coverage(tool, args, target)
                     trace.add("verification", result.brief(240), **evidence, **coverage)
             else:
                 last_error = result.error
@@ -289,9 +313,10 @@ class Agent:
 
         trace.add("error", f"step budget exhausted after {self.config.max_steps} steps")
         trace.finish("exhausted")
+        fully = verified and all(w["verified"] for w in writes)
         return RunResult("exhausted",
                          last_error or "ran out of steps before verifying the outcome",
-                         verified, evidence, trace, self.config.max_steps)
+                         fully, evidence, trace, self.config.max_steps)
 
     # -- guards ------------------------------------------------------------
     def _contested_block(self, tool: Tool | None, args: dict[str, Any],
@@ -393,7 +418,7 @@ class Agent:
 
     # -- binding -----------------------------------------------------------
     def _bind(self, decision: Decision, tool: Tool | None, state: dict[str, Any],
-              last_write: dict[str, Any] | None) -> dict[str, Any]:
+              target: dict[str, Any] | None) -> dict[str, Any]:
         """Fill a tool's arguments from what the run has established.
 
         Driven entirely by the tool's declared parameters, so it works for any
@@ -401,8 +426,8 @@ class Agent:
         and a parameter named ``expect_x`` from the value of ``x`` that was
         actually written.
 
-        For verify tools the expectations are always taken from the last write,
-        even if the planner passed its own. The point of verification is to
+        For verify tools the expectations are always taken from the write being
+        checked, even if the planner passed its own. The point of verification is to
         compare the record with what was sent, and letting the planner choose
         the expectations would let it check less than it wrote.
         """
@@ -414,7 +439,7 @@ class Agent:
         if tool is None:
             return args
 
-        written = (last_write or {}).get("args", {})
+        written = (target or {}).get("args", {})
 
         if tool.kind == "verify":
             for p in tool.params:
@@ -499,12 +524,47 @@ def _public(state: dict[str, Any], key: str) -> bool:
     return not key.startswith(_INTERNAL) and state.get(key) not in (None, "")
 
 
+def _identity(tool: Tool) -> list[str]:
+    """A verify tool's non-expectation parameters: what names the record."""
+    return [p for p in tool.params if not p.startswith("expect_")]
+
+
+def _target_write(tool: Tool | None, planner_args: dict[str, Any],
+                  writes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The write a verify call is checking.
+
+    If the planner named the record, it is the latest write of that record, or
+    nothing at all when no write matches. Otherwise it is the latest write not
+    yet read back, so successive unkeyed verifies work through a batch.
+    """
+    if tool is None or tool.kind != "verify" or not writes:
+        return None
+    named = {p: str(planner_args[p]).strip() for p in _identity(tool)
+             if planner_args.get(p) not in (None, "")}
+    if named:
+        for w in reversed(writes):
+            if all(str(w["args"].get(p, "")).strip() == v for p, v in named.items()):
+                return w
+        return None
+    pending = [w for w in writes if not w["verified"]]
+    return (pending or writes)[-1]
+
+
+def _mark_verified(tool: Tool, target: dict[str, Any],
+                   writes: list[dict[str, Any]]) -> None:
+    # Earlier writes of the same record were superseded by the one just checked.
+    ident = {p: target["args"][p] for p in _identity(tool) if p in target["args"]}
+    for w in writes:
+        if w is target or (ident and all(w["args"].get(p) == v for p, v in ident.items())):
+            w["verified"] = True
+
+
 def _coverage(tool: Tool | None, args: dict[str, Any],
-              last_write: dict[str, Any] | None) -> dict[str, Any]:
+              target: dict[str, Any] | None) -> dict[str, Any]:
     """Which written fields the verification actually compared."""
-    if tool is None or not last_write:
+    if tool is None or not target:
         return {}
-    written = set(last_write.get("args", {}))
+    written = set(target.get("args", {}))
     compared = {p[len("expect_"):] for p in args if p.startswith("expect_")}
     keys = {p for p in args if not p.startswith("expect_")}
     checked = written & (compared | keys)

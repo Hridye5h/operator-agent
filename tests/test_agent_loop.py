@@ -557,3 +557,104 @@ def test_a_resolving_answer_does_produce_the_right_write(trace):
     assert len(written) == 1
     assert written[0]["amount"] == "96400.00"
     assert result.status == "completed"
+
+
+# -- every write is read back -------------------------------------------------
+
+def recording_payables():
+    """Stub AP system that stores writes and verifies against what it stored."""
+    stored, checks = {}, []
+
+    def submit_payable(**k):
+        stored[k["invoice_number"]] = dict(k)
+        return ToolResult(True, data={"record_id": len(stored)})
+
+    def verify_payable(invoice_number="", **expect):
+        checks.append({"invoice_number": invoice_number, **expect})
+        rec = stored.get(invoice_number)
+        if rec is None:
+            return ToolResult(False, error=f"no record {invoice_number}")
+        for k, v in expect.items():
+            if rec.get(k[len("expect_"):]) != v:
+                return ToolResult(False, error=f"MISMATCH {k}")
+        return ToolResult(True, data={"invoice_number": invoice_number}, display="VERIFIED")
+
+    reg = make_registry(submit_payable=submit_payable, verify_payable=verify_payable)
+    return reg, stored, checks
+
+
+def write(invoice, amount):
+    return Decision("submit_payable", {"vendor": "V", "invoice_number": invoice,
+                                       "amount": amount, "due_date": "2026-01-01"})
+
+
+def test_a_write_after_verification_must_be_verified_too(trace):
+    reg, _, _ = recording_payables()
+    planner = SequencePlanner([write("A-1", "10.00"), Decision("verify_payable", {}),
+                               write("B-2", "20.00"), Decision("finish", {})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=6)).run("record both", trace)
+
+    assert result.status == "exhausted"
+    assert not result.verified
+    assert any("WRITES NOT YET VERIFIED" in c and "B-2" in c for c in planner.seen_contexts)
+    assert any("not yet read back" in c for c in planner.seen_contexts)
+
+
+def test_one_verify_does_not_cover_a_batch(trace):
+    reg, _, _ = recording_payables()
+    planner = SequencePlanner([write("A-1", "10.00"), write("B-2", "20.00"),
+                               Decision("verify_payable", {}), Decision("finish", {})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=6)).run("record both", trace)
+
+    assert result.status == "exhausted"
+
+
+def test_each_record_is_checked_against_its_own_write(trace):
+    reg, _, checks = recording_payables()
+    planner = SequencePlanner([write("A-1", "10.00"), write("B-2", "20.00"),
+                               Decision("verify_payable", {"invoice_number": "A-1"}),
+                               Decision("verify_payable", {"invoice_number": "B-2"}),
+                               Decision("finish", {})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=6)).run("record both", trace)
+
+    assert result.status == "completed" and result.verified
+    assert [c["expect_amount"] for c in checks] == ["10.00", "20.00"]
+
+
+def test_unkeyed_verifies_work_through_the_batch(trace):
+    reg, _, checks = recording_payables()
+    planner = SequencePlanner([write("A-1", "10.00"), write("B-2", "20.00"),
+                               Decision("verify_payable", {}), Decision("verify_payable", {}),
+                               Decision("finish", {})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=6)).run("record both", trace)
+
+    assert result.status == "completed"
+    assert [c["invoice_number"] for c in checks] == ["B-2", "A-1"]
+
+
+def test_verifying_a_lookalike_record_does_not_count(trace):
+    reg, stored, _ = recording_payables()
+    stored["OLD-9"] = {"vendor": "V", "invoice_number": "OLD-9",
+                       "amount": "10.00", "due_date": "2026-01-01"}
+    planner = SequencePlanner([write("A-1", "10.00"),
+                               Decision("verify_payable", {"invoice_number": "OLD-9"}),
+                               Decision("finish", {})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=5)).run("record A", trace)
+
+    assert result.status == "exhausted"
+
+
+def test_a_corrected_write_supersedes_the_earlier_one(trace):
+    reg, _, checks = recording_payables()
+    planner = SequencePlanner([write("A-1", "10.00"), write("A-1", "12.00"),
+                               Decision("verify_payable", {}), Decision("finish", {})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=6)).run("record A", trace)
+
+    assert result.status == "completed"
+    assert checks[0]["expect_amount"] == "12.00"

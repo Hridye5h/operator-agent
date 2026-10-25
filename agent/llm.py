@@ -134,6 +134,14 @@ class Planner(Protocol):
 
 #: Tried in order when no model is configured; the first one this key can use wins.
 PREFERRED_MODELS = ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash")
+#: The model is struggling right now (overloaded, or past the deadline); another
+#: model is not.
+OVERLOADED = {503, 504}
+GENERAL_FLASH = re.compile(r"gemini-\d+(?:\.\d+)*-flash")
+
+
+def _version(name: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", name))
 
 #: HTTP codes worth waiting out: rate limits and transient server faults.
 RETRYABLE = {429, 500, 502, 503, 504}
@@ -145,16 +153,22 @@ class GeminiPlanner:
     * The model is configurable (``GEMINI_MODEL``). If unset, the planner asks
       the API which models this key can use and picks the first known-good one,
       so a retired model name does not break a run.
+    * Every request carries a deadline, so a model that has slowed to minutes
+      per reply fails fast instead of stalling the run.
     * Rate limits and transient server errors are waited out, honouring the
-      server's own retry delay when it gives one. A daily quota is not retried:
-      waiting will not bring it back.
+      server's own retry delay when it gives one. Quotas and load are per model,
+      so when the model was chosen automatically, a used-up daily quota, an
+      overloaded model (503) or an expired deadline (504) moves the planner to
+      the next model the key can use, and it says so. A model set explicitly is
+      never swapped: its errors are waited out or reported.
     * The output cap is generous. Newer models reason before answering and that
       reasoning counts against the cap; a tight cap returns an empty reply.
     """
 
     def __init__(self, model: str | None = None, api_key: str | None = None,
                  client: Any = None, max_tokens: int = 8192, max_attempts: int = 5,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep,
+                 request_timeout: float = 60.0) -> None:
         self._max_tokens = max_tokens
         self._max_attempts = max_attempts
         self._sleep = sleep
@@ -163,31 +177,49 @@ class GeminiPlanner:
 
         if client is None:
             from google import genai  # imported lazily so the offline path needs no SDK
+            from google.genai import types
 
             key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             if not key:
                 raise RuntimeError("GEMINI_API_KEY is not set")
-            client = genai.Client(api_key=key)
+            # The deadline is enforced by the server, which rejects one under 10s.
+            client = genai.Client(api_key=key, http_options=types.HttpOptions(
+                timeout=int(max(request_timeout, 10.0) * 1000)))
         self._client = client
 
-        self._model = model or os.environ.get("GEMINI_MODEL") or self._pick_model()
+        explicit = model or os.environ.get("GEMINI_MODEL")
+        #: Models to plan with, in order of preference.
+        self.models: list[str] = [explicit] if explicit else self._candidates()
+        self._model = self.models[0]
         self.name = f"gemini:{self._model}"
+        #: (from, to) for every switch forced by a daily quota.
+        self.switches: list[tuple[str, str]] = []
 
-    def _pick_model(self) -> str:
-        """The first preferred model this key can actually call."""
+    def _candidates(self) -> list[str]:
+        """Models this key can call, best first: the preferred ones, then any
+        other general-purpose flash model, newest first."""
         try:
             available = {
                 m.name.split("/")[-1] for m in self._client.models.list()
                 if "generateContent" in (getattr(m, "supported_actions", None) or [])
             }
         except Exception:
-            return PREFERRED_MODELS[0]
-        for name in PREFERRED_MODELS:
-            if name in available:
-                return name
-        flash = sorted(n for n in available if "flash" in n and "lite" not in n
-                       and "image" not in n and "tts" not in n)
-        return flash[-1] if flash else PREFERRED_MODELS[0]
+            return [PREFERRED_MODELS[0]]
+        ordered = [n for n in PREFERRED_MODELS if n in available]
+        general = sorted((n for n in available if GENERAL_FLASH.fullmatch(n)),
+                         key=_version, reverse=True)
+        ordered += [n for n in general if n not in ordered]
+        return ordered or [PREFERRED_MODELS[0]]
+
+    def _next_model(self, why: str) -> bool:
+        i = self.models.index(self._model)
+        if i + 1 >= len(self.models):
+            return False
+        old, self._model = self._model, self.models[i + 1]
+        self.name = f"gemini:{self._model}"
+        self.switches.append((old, self._model))
+        print(f"       gemini {why} on {old}: switching to {self._model}", flush=True)
+        return True
 
     def decide(self, system: str, context: str) -> Decision:
         from google.genai import types
@@ -200,15 +232,22 @@ class GeminiPlanner:
         )
 
         delay = 2.0
-        for attempt in range(1, self._max_attempts + 1):
+        attempt = 1
+        while True:
             try:
                 response = self._client.models.generate_content(
                     model=self._model, contents=context, config=config)
                 break
             except Exception as exc:
                 code = getattr(exc, "code", None)
-                if code not in RETRYABLE or attempt == self._max_attempts \
-                        or _is_daily_quota(exc):
+                if _is_daily_quota(exc):
+                    if self._next_model("daily quota used up"):
+                        continue
+                    raise
+                if code in OVERLOADED and self._next_model(
+                        f"{code} {getattr(exc, 'status', '') or ''}".strip()):
+                    continue
+                if code not in RETRYABLE or attempt >= self._max_attempts:
                     raise
                 wait = _retry_after(exc) or delay
                 self.waits.append((code, wait))
@@ -217,6 +256,7 @@ class GeminiPlanner:
                       flush=True)
                 self._sleep(wait)
                 delay = min(delay * 2, 60.0)
+                attempt += 1
 
         text = getattr(response, "text", None)
         if not text:

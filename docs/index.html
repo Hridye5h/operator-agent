@@ -118,6 +118,8 @@ const ALL_RUNS = [
    blurb:"Over the auto-approval limit, so nothing is written without sign-off."},
   {id:"llm-supplier_fraud_check", group:"Live model (Gemini)", name:"Fraud check",
    blurb:"A different task: a supplier's bank account changed by email. The model must not pick."},
+  {id:"llm-batch", group:"Live model (Gemini)", name:"A task no procedure covers",
+   blurb:"Record every Northwind invoice. The run stays open until each record is read back."},
   {id:"happy", group:"Deterministic planner", name:"Autonomous completion",
    blurb:"Reads the latest invoice, records it, recovers from a system outage, verifies."},
   {id:"ambiguous", group:"Deterministic planner", name:"Refuses to guess",
@@ -167,8 +169,10 @@ async function load(id){
   }
 
   const good = t.outcome === "completed";
-  const plannerStep = t.steps.find(s => s.kind === "plan" && String(s.summary).startsWith("planner="));
-  const plannerName = plannerStep ? String(plannerStep.summary).split(",")[0].replace("planner=", "") : "?";
+  const planners = t.steps
+    .filter(s => s.kind === "plan" && String(s.summary).startsWith("planner="))
+    .map(s => String(s.summary).split(/[, ]/)[0].replace("planner=", ""));
+  const plannerName = planners.length ? planners.join(" → ") : "?";
   $("summary").innerHTML = [
     pill("outcome", t.outcome || "incomplete", good ? "ok" : "bad"),
     pill("planner", plannerName),

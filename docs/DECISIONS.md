@@ -333,3 +333,61 @@ number it saw.
 Only words distinctive to one label now count, and a reply naming two candidates
 resolves nothing. The cost is that some genuine replies need rephrasing. In a
 fraud check, being asked again is the right failure.
+
+---
+
+### 22. Every write is verified, each against its own values
+
+`verified` was a single flag, and expectations were bound from the last write.
+Both are fine for one record and wrong for several. Write A, verify it, write B,
+finish: the run completed with B never read back. Write A, write B, verify
+once: completed with A never checked. And a planner verifying A after writing B
+had A compared against B's values, so a correct record failed.
+
+The loop now keeps every successful write. A verify call is matched to the write
+it names by the verify tool's identifying parameters (`invoice_number`,
+`gstin`), or to the latest write not yet checked when it names none, and binds
+its expectations from that write. `finish` is refused while any write is
+unverified, and the refusal names them. A second write of the same record
+supersedes the first.
+
+Six regression tests cover this; five fail on the old loop.
+
+---
+
+### 23. A struggling model is swapped, unless the model was chosen
+
+Free-tier quotas are per model, and three recorded runs used up a day's quota
+for `gemini-2.5-flash` while the key could still call several other models.
+The first fix moved to the next model on a daily quota, and the next recording
+showed why that was not enough: the fallback answered, but in minutes. Probing
+each model with a trivial request gave 63s, 168s, a 503 "high demand", then two
+models at about 3s. With no deadline, the planner sat on a slow model until the
+recorder killed the run.
+
+Every request now carries a deadline (60s; the server enforces it and rejects
+anything under 10s, and an expired one comes back as a 504). When the model was
+picked automatically, a used-up daily quota, a 503 or a 504 moves the planner
+to the next model the key can use: the preferred list first, then other
+general-purpose flash models, newest first. A per-minute 429 is still waited
+out, because the limit is ours, not the model's. Each switch is printed and
+recorded in the trace, and the run viewer shows every model that planned part
+of a run.
+
+A model set with `GEMINI_MODEL` is never swapped: someone who pinned a model
+for a comparison should get an error or a wait, not a silent substitute.
+
+---
+
+### 24. Refuse to start when the port is already taken
+
+When the recorder killed a run that had overrun, only `run_agent` died. The mock
+server it had started kept listening on :8099. The next run would have started
+its own server, which fails to bind with its output discarded, and the health
+check would then have passed against the old one. The agent would have run
+against whatever code and settings that process started with, and the reset
+would have gone to it too.
+
+`start_environment` now refuses to start if anything already answers on the
+port, and says what probably happened. The recorder kills the whole process
+tree on a timeout and does not publish the partial run.

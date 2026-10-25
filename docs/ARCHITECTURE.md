@@ -38,19 +38,20 @@
 ## The loop
 
 `Agent.run(goal, trace, procedure)` holds the goal, an observation buffer, a
-working state, and the last write. Each turn:
+working state, and every write it has made. Each turn:
 
 ```
 decision = planner.decide(SYSTEM_PROMPT, context(goal, procedure, tools, state, history))
 
 if decision.action == "finish":
-    if not verified: refuse, tell the planner why, continue        # gate 1
+    if any write is not yet verified: refuse, name it, continue    # gate 1
     return completed
 
 if decision.confidence < floor: decision = ask_human(...)
 
 tool = registry.get(decision.action)
-args = bind(decision, tool, state, last_write)                     # schema-driven
+target = the write a verify call names (else the latest unverified one)
+args = bind(decision, tool, state, target)                         # schema-driven
 
 if tool.kind == "write" and a field it sets is contested:          # gate 2
     refuse, tell the planner why, continue
@@ -59,8 +60,8 @@ if approval required and not granted:                              # gate 3
 
 result = registry.invoke(...)          # never raises
 absorb(tool.kind, result, state)       # read → fields / contested; ask → resolution
-if tool.kind == "write" and result.ok: last_write = args
-if tool.kind == "verify" and result.ok: verified = True            # with coverage
+if tool.kind == "write" and result.ok: writes.append(args)
+if tool.kind == "verify" and result.ok: mark target verified       # with coverage
 ```
 
 ## Kinds, not names
@@ -71,8 +72,8 @@ Every tool declares one of six kinds, and the loop reasons only in kinds:
 |---|---|
 | `discover` | none beyond recording the observation |
 | `read` | absorbs `fields` into working state; records a `contested` field and removes its value |
-| `write` | subject to the contested-value guard; its arguments become `last_write` |
-| `verify` | expectations bound from `last_write`; success sets `verified` |
+| `write` | subject to the contested-value guard; a successful write joins the list that must be verified |
+| `verify` | expectations bound from the write it names (or the latest unverified one); success marks that write verified |
 | `ask` | a reply naming one candidate resolves the contest; anything else is guidance |
 | `other` | none |
 

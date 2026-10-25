@@ -5,8 +5,9 @@ browser against a company system that was never designed for an agent, recovers
 when things fail, asks a human when it genuinely cannot decide, and **verifies
 the outcome by reading it back** before it reports success.
 
-**[▶ Live run viewer](https://hridye5h.github.io/operator-agent/)** — three recorded
-runs, step by step, with the screenshots the agent's browser actually produced.
+**[▶ Live run viewer](https://hridye5h.github.io/operator-agent/)** — recorded runs,
+step by step, planned both by a live model (Gemini) and by the deterministic
+planner, with the screenshots and video of the agent's own browser.
 
 ```
 Goal → Understand → Plan → Execute → Observe → Adapt → Verify → Complete
@@ -38,7 +39,8 @@ python mockenv/vendors/generate_vendor_forms.py     # supplier registration corp
 python run_agent.py --scenario happy
 ```
 
-No API key is required — see [Running without an API key](#running-without-an-api-key).
+No API key is required for any scenario except `batch` — see
+[Running without an API key](#running-without-an-api-key).
 
 ### Scenarios
 
@@ -51,6 +53,7 @@ No API key is required — see [Running without an API key](#running-without-an-
 | `--scenario high_value` | Payable over the approval limit; the agent gets sign-off before writing |
 | `--scenario declined` | Approval refused — nothing is written, and the human is not asked twice |
 | `--scenario duplicate` | Runs the task twice; the second pass confirms rather than double-entering |
+| `--scenario batch` | Every Northwind invoice in one run — a shape no procedure describes, so it needs the LLM planner. The run cannot finish until each record written has been read back |
 | **Vendor Master** — same agent, different procedure | |
 | `--scenario supplier` | Registers a supplier from their signed form and verifies all six fields |
 | `--scenario supplier_fraud_check` | A bank-account change arrived by email — the classic payment-fraud pattern. The agent refuses to pick and asks; a person confirms the signed-form account |
@@ -111,7 +114,7 @@ weaker or misbehaving planner must not be able to get around these:
 
 | Guarantee | What it stops |
 |---|---|
-| A run cannot finish until a verify tool has read the outcome back | reporting success on the strength of a success page |
+| A run cannot finish until every record it wrote has been read back by a verify tool | reporting success on the strength of a success page, or after checking one record of a batch |
 | Verification compares every field that was actually written | a planner verifying less than it wrote |
 | A contested value cannot be written until a human resolves it | a planner — or a model — guessing between two figures |
 | A declined action is never executed or re-asked | interrogating a person until they give in |
@@ -135,14 +138,16 @@ API is used only for verification — standing in for the independent read-back 
 real deployment would do.
 
 **Verification is enforced by the loop, not by the planner's good intentions.**
-A run physically cannot return `completed` without having passed a verification
-step that re-read the record from the system of record and compared it field by
-field. If the planner tries to finish early it is refused and told why:
+A run physically cannot return `completed` until every record it wrote has been
+re-read from the system of record and compared field by field — each one against
+the values of its own write. If the planner tries to finish early it is refused
+and told which writes are still unchecked:
 
 ```python
 if decision.action == "finish":
-    if self.config.require_verification and not verified:
-        observations.append("SYSTEM: Refused to finish: the outcome has not been verified.")
+    pending = [w for w in writes if not w["verified"]]
+    if self.config.require_verification and (not verified or pending):
+        observations.append(f"SYSTEM: {nudge}")    # names each unverified write
         continue
 ```
 
@@ -214,9 +219,12 @@ python run_agent.py --scenario happy --planner gemini
 `.env` is loaded at startup but never overrides a variable already set in the
 shell. If `GEMINI_MODEL` is not set, the planner asks the API which models the key
 can use and picks the first known-good one, so a retired model name does not
-break a run. Rate limits and transient server errors are waited out, using the
-server's own retry delay when it sends one; a daily quota is reported rather
-than retried.
+break a run. Every request carries a 60-second deadline. Per-minute rate limits
+and transient server errors are waited out, using the server's own retry delay
+when it sends one. Quotas and load are per model: when the model was chosen
+automatically, a used-up daily quota, an overloaded model or an expired deadline
+moves the planner to the next model the key can use, and the trace records the
+switch. A model set with `GEMINI_MODEL` is never swapped.
 
 `python scripts/record_llm_demos.py` records model-driven runs, with video, into
 the run viewer. Runs are kept as they happened — a run that escalates or fails is
@@ -274,16 +282,16 @@ survive extraction, the form, the database and verification as a string.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 133 tests, ~4s
+python -m pytest tests/ -q                # 148 tests, a few seconds
 python -m pytest tests/ -m integration    # + 7 runs against the real app and browser (~1 min)
 ```
 
 | File | Covers |
 |---|---|
-| `test_agent_loop.py` | Loop invariants: verification cannot be skipped, failed verification is not success, retriable vs permanent, tool crashes survive, escalation stops the run, low confidence reroutes to a human, declined actions are never executed or re-asked, a broken policy fails closed |
+| `test_agent_loop.py` | Loop invariants: verification cannot be skipped, every write in a batch is read back against its own values, failed verification is not success, retriable vs permanent, tool crashes survive, escalation stops the run, low confidence reroutes to a human, declined actions are never executed or re-asked, a broken policy fails closed |
 | `test_generalization.py` | A misbehaving planner cannot write a contested value or verify less than it wrote; one deterministic planner executes both procedures; overlapping labels and negations in a human reply are not misread; the framework names no task |
 | `test_extraction.py` | All six invoices against ground truth, the columnar-layout regression, ambiguity reported not resolved |
-| `test_planner.py` | Parsing what a model actually sends (fenced, prose-wrapped, truncated, blocked), the Gemini request shape, and how the agent re-prompts an unusable reply |
+| `test_planner.py` | Parsing what a model actually sends (fenced, prose-wrapped, truncated, blocked), the Gemini request shape, how the agent re-prompts an unusable reply, rate-limit waits and the per-model quota fallback |
 | `test_internal_app.py` | The environment's failure modes behave as specified |
 | `test_integration_browser.py` | Label-based form filling and result reading against the real app; leading zeros through the whole stack; the fraud pattern with and without a person to ask (marked `integration`) |
 | `test_integration_llm.py` | A full run driven by LLM-shaped replies against the real browser, server and verification read-back (marked `integration`) |

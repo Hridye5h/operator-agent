@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -24,7 +25,19 @@ sys.path.insert(0, str(ROOT))
 
 from run_agent import load_env  # noqa: E402
 
-DEFAULT = ["happy", "ambiguous", "high_value", "supplier_fraud_check"]
+RUN_TIMEOUT = 1800
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """A run starts a server and a browser; killing only the child leaves both."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True)
+    else:
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
+DEFAULT = ["happy", "ambiguous", "high_value", "supplier_fraud_check", "batch"]
 DEST = ROOT / "docs" / "demo" / "runs"
 
 
@@ -44,15 +57,24 @@ def main(argv: list[str]) -> int:
     for scenario in scenarios:
         before = set((ROOT / "runs").glob("*")) if (ROOT / "runs").exists() else set()
         print(f"\n=== {scenario} (gemini) ===", flush=True)
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-I", str(ROOT / "run_agent.py"), "--scenario", scenario,
-             "--planner", "gemini", "--max-steps", "20", "--record-video"],
-            cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=900,
+             "--planner", "gemini", "--max-steps", "30", "--record-video"],
+            cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace", start_new_session=os.name != "nt",
         )
-        print(proc.stdout[-2500:])
+        try:
+            out, err = proc.communicate(timeout=RUN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            out, err = proc.communicate()
+            print(out[-2500:])
+            print(f"timed out after {RUN_TIMEOUT}s; the run is not published")
+            rows.append((scenario, "timed out", "", ""))
+            continue
+        print(out[-2500:])
         if proc.returncode not in (0, 1):
-            print(proc.stderr[-1500:])
+            print(err[-1500:])
 
         run = newest_run(before)
         if run is None or not (run / "trace.json").exists():
@@ -69,8 +91,8 @@ def main(argv: list[str]) -> int:
                 shutil.copy2(art, target / "artifacts" / art.name)
 
         trace = json.loads((run / "trace.json").read_text(encoding="utf-8"))
-        planner = next((s["summary"] for s in trace["steps"]
-                        if s["kind"] == "plan" and s["summary"].startswith("planner=")), "")
+        planner = " -> ".join(s["summary"].split(",")[0] for s in trace["steps"]
+                              if s["kind"] == "plan" and s["summary"].startswith("planner="))
         rows.append((scenario, trace.get("outcome") or "incomplete",
                      str(trace.get("step_count")), planner))
 
