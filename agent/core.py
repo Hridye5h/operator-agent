@@ -100,6 +100,9 @@ class AgentConfig:
     human_tool: str = "ask_human"
     #: How many times to re-prompt when a planner reply cannot be parsed.
     planner_retries: int = 2
+    #: Questions the planner may put to a person in one run, asked directly or
+    #: rerouted for low confidence. Approvals are separate and never re-asked.
+    max_questions: int = 5
     #: Called before every tool invocation. Return a reason string to require
     #: human approval for that specific call, or None to allow it. This is how
     #: value thresholds and other policy live outside the loop.
@@ -165,6 +168,7 @@ class Agent:
         granted: set[str] = set()
         declined: dict[str, int] = {}
         stalls = 0
+        questions = 0
         human = self.config.human_tool
 
         planner_name = self.planner.name
@@ -245,6 +249,17 @@ class Agent:
                                  f"confident. {decision.reasoning} How should I proceed?"},
                     reasoning="low confidence",
                 )
+
+            # A planner that stays unsure would otherwise put a question to a
+            # person on every turn until the step budget ran out.
+            if decision.action == human:
+                questions += 1
+                if questions > self.config.max_questions:
+                    msg = (f"the planner has asked a person {questions - 1} times in this "
+                           f"run; stopping rather than asking again.")
+                    trace.add("escalation", msg)
+                    trace.finish("escalated")
+                    return RunResult("escalated", msg, False, {}, trace, step)
 
             trace.add("decision", decision.reasoning or decision.action,
                       action=decision.action, confidence=decision.confidence)

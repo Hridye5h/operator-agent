@@ -537,3 +537,14 @@ read as 73,219.00 without a word. And a date the calendar does not have, such as
 2026-13-45, was passed through as if it were one. Both now come back as missing
 fields, which the agent reports instead of writing: a parser that fails loudly
 is the reason extraction is not done by a model in the first place.
+
+---
+
+### 36. A person is asked a bounded number of questions
+
+Approvals were remembered so a refusal is never re-asked, but questions were
+not bounded at all. A planner that stayed below the confidence floor had every
+step rerouted to a person, and one that simply kept calling `ask_human` was
+answered every time, until the step budget ran out. Both now count against
+`max_questions` (five by default); past it the run ends as `escalated`. No
+recorded scenario asks more than once.

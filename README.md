@@ -170,12 +170,14 @@ a page, where a parser that fails loudly beats a model that quietly rounds a
 figure. So the LLM plans, and extraction is explicit parsing that reports gaps
 rather than inventing values.
 
-**Escalation is a first-class outcome.** When a document contradicts itself —
+**Escalation is a first-class outcome, and it is bounded.** When a document contradicts itself —
 two totals on an invoice, or a supplier's bank account changed by email — the
 reader reports the field as contested and the agent asks. A reply only resolves
 it if it names one of the candidates; "see the email from 15 March" is guidance,
 not an amount. If nobody answers, the run ends as `escalated` with nothing
-written. Doing nothing is the correct result there.
+written. Doing nothing is the correct result there. A planner that keeps
+asking — or stays unsure turn after turn — is stopped after five questions
+rather than allowed to interrogate whoever is answering.
 
 **Approval is policy, enforced by the loop.** A tool can declare
 `requires_approval`, and a configurable policy can gate any individual call —
@@ -290,7 +292,7 @@ survive extraction, the form, the database and verification as a string.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 233 tests, a few seconds
+python -m pytest tests/ -q                # 235 tests, a few seconds
 python -m pytest tests/ -m integration    # + 8 runs against the real app and browser (~2 min)
 ```
 

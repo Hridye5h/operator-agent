@@ -764,3 +764,31 @@ def test_a_crashed_write_that_did_not_land_cannot_complete(trace):
     result = Agent(planner, reg, AgentConfig(max_steps=5)).run("record A", trace)
 
     assert result.status == "exhausted" and not result.verified
+
+
+# -- a person is not interrogated -----------------------------------------------
+
+def test_a_planner_that_stays_unsure_stops_asking(trace):
+    asked = []
+    reg = make_registry(
+        ask_human=lambda **k: (asked.append(k), ToolResult(True, data={"answer": "go on"}))[1],
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([Decision("verify_payable", {}, "not sure", 0.1)])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=20, max_questions=3)).run("x", trace)
+
+    assert len(asked) == 3
+    assert result.status == "escalated"
+
+
+def test_a_planner_that_keeps_asking_is_stopped(trace):
+    asked = []
+    reg = make_registry(
+        ask_human=lambda **k: (asked.append(k), ToolResult(True, data={"answer": "fine"}))[1])
+    planner = SequencePlanner([Decision("ask_human", {"question": "and now?"})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=20)).run("x", trace)
+
+    assert len(asked) == AgentConfig().max_questions
+    assert result.status == "escalated"
