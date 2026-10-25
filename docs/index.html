@@ -35,6 +35,12 @@
   .tabs button:hover{border-color:var(--accent)}
   .tabs button[aria-selected=true]{border-color:var(--accent);
       box-shadow:inset 0 0 0 1px var(--accent)}
+  .tabs .group{flex:1 1 100%;font-size:12px;text-transform:uppercase;letter-spacing:.6px;
+      color:var(--mut);margin:6px 2px -2px}
+  .video{margin-bottom:18px}
+  .video video{display:block;width:100%;border:1px solid var(--line);border-radius:9px;
+      background:#000}
+  .video .meta{margin-top:6px}
   .tabs b{display:block;font-size:14px}
   .tabs span{display:block;color:var(--mut);font-size:12.5px;margin-top:2px}
   .summary{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
@@ -94,28 +100,44 @@
   <div class="tabs" id="tabs" role="tablist"></div>
   <div class="summary" id="summary"></div>
   <div class="goal" id="goal"></div>
+  <div class="video" id="video"></div>
   <ol class="steps" id="steps"></ol>
 </main>
 
 <footer id="foot"></footer>
 
 <script>
-const RUNS = [
-  {id:"happy", name:"Autonomous completion",
+// Runs are shown only if their trace exists, so the page works before the
+// live-model runs have been recorded.
+const ALL_RUNS = [
+  {id:"llm-happy", group:"Live model (Gemini)", name:"Autonomous completion",
+   blurb:"The model plans every step: reads the invoice, records it, recovers from an outage, verifies."},
+  {id:"llm-ambiguous", group:"Live model (Gemini)", name:"Refuses to guess",
+   blurb:"Two totals on one invoice. The model asks; the loop would refuse a guess anyway."},
+  {id:"llm-high_value", group:"Live model (Gemini)", name:"Needs approval",
+   blurb:"Over the auto-approval limit, so nothing is written without sign-off."},
+  {id:"llm-supplier_fraud_check", group:"Live model (Gemini)", name:"Fraud check",
+   blurb:"A different task: a supplier's bank account changed by email. The model must not pick."},
+  {id:"happy", group:"Deterministic planner", name:"Autonomous completion",
    blurb:"Reads the latest invoice, records it, recovers from a system outage, verifies."},
-  {id:"ambiguous", name:"Refuses to guess",
+  {id:"ambiguous", group:"Deterministic planner", name:"Refuses to guess",
    blurb:"The invoice states two different totals, so the agent escalates to a human."},
-  {id:"high_value", name:"Needs approval",
+  {id:"high_value", group:"Deterministic planner", name:"Needs approval",
    blurb:"The payable is over the limit, so sign-off is required before anything is written."},
+  {id:"supplier_fraud_check", group:"Deterministic planner", name:"Fraud check (second task)",
+   blurb:"Same agent, different system: the bank account changed by email, so it asks before registering."},
 ];
+let RUNS = ALL_RUNS;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s??"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 
 function renderTabs(active){
-  $("tabs").innerHTML = RUNS.map(r =>
+  const groups = [...new Set(RUNS.map(r => r.group))];
+  $("tabs").innerHTML = groups.map(g =>
+    `<div class="group">${esc(g)}</div>` + RUNS.filter(r => r.group === g).map(r =>
     `<button role="tab" data-id="${r.id}" aria-selected="${r.id===active}">
-       <b>${esc(r.name)}</b><span>${esc(r.blurb)}</span></button>`).join("");
+       <b>${esc(r.name)}</b><span>${esc(r.blurb)}</span></button>`).join("")).join("");
   $("tabs").querySelectorAll("button").forEach(b =>
     b.onclick = () => load(b.dataset.id));
 }
@@ -126,6 +148,7 @@ function pill(label, value, cls=""){
 
 async function load(id){
   renderTabs(id);
+  $("video").innerHTML = "";
   const run = RUNS.find(r => r.id === id);
   $("steps").innerHTML = `<li class="step"><div class="idx"></div><div class="kind">…</div>
                           <div class="body"><div class="text">Loading run…</div></div></li>`;
@@ -144,18 +167,26 @@ async function load(id){
   }
 
   const good = t.outcome === "completed";
+  const plannerStep = t.steps.find(s => s.kind === "plan" && String(s.summary).startsWith("planner="));
+  const plannerName = plannerStep ? String(plannerStep.summary).split(",")[0].replace("planner=", "") : "?";
   $("summary").innerHTML = [
     pill("outcome", t.outcome || "incomplete", good ? "ok" : "bad"),
+    pill("planner", plannerName),
     pill("steps", t.step_count),
     pill("duration", t.duration_s + "s"),
-    pill("run", t.run_id),
   ].join("");
   $("goal").innerHTML = `<b>Goal</b> — ${esc(t.goal)}`;
+
+  const video = t.steps.flatMap(s => s.artifacts || []).find(a => a.endsWith(".webm"));
+  $("video").innerHTML = video
+    ? `<video controls preload="metadata" src="demo/runs/${id}/artifacts/${esc(video)}"></video>
+       <div class="meta">The agent's browser, recorded during this run.</div>`
+    : "";
 
   $("steps").innerHTML = t.steps.map(s => {
     const failed = s.detail && s.detail.ok === false;
     const mono = s.kind === "tool_call" || s.kind === "observation";
-    const shots = (s.artifacts || []).map(a => {
+    const shots = (s.artifacts || []).filter(a => !a.endsWith(".webm")).map(a => {
       const src = `demo/runs/${id}/artifacts/${a}`;
       return `<a href="${src}" target="_blank" rel="noopener">
                 <img src="${src}" alt="${esc(a)}" loading="lazy"><span>${esc(a)}</span></a>`;
@@ -193,7 +224,14 @@ try{
   if(saved) document.documentElement.setAttribute("data-theme", saved);
 }catch(e){}
 
-load("happy");
+(async () => {
+  const present = await Promise.all(ALL_RUNS.map(r =>
+    fetch(`demo/runs/${r.id}/trace.json`, {method: "HEAD", cache: "no-store"})
+      .then(res => res.ok).catch(() => false)));
+  RUNS = ALL_RUNS.filter((_, i) => present[i]);
+  if (!RUNS.length) RUNS = ALL_RUNS;
+  load(RUNS[0].id);
+})();
 </script>
 </body>
 </html>

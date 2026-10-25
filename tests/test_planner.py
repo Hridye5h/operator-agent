@@ -244,3 +244,154 @@ def test_scripted_can_be_requested_explicitly():
     planner, note = build_planner("scripted")
     assert isinstance(planner, ScriptedPlanner)
     assert note is None
+
+
+# --------------------------------------------------------------------------
+# Live-API hardening: model selection, rate limits, .env
+# --------------------------------------------------------------------------
+
+class FakeAPIError(Exception):
+    """Shaped like google.genai.errors.APIError."""
+
+    def __init__(self, code, status="", message="", details=None):
+        super().__init__(f"{code} {status} {message}")
+        self.code, self.status, self.message, self.details = code, status, message, details
+
+
+class ListingModels(StubModels):
+    def __init__(self, reply, names):
+        super().__init__(reply)
+        self._names = names
+
+    def list(self):
+        return [pytypes.SimpleNamespace(name=f"models/{n}",
+                                        supported_actions=["generateContent"])
+                for n in self._names]
+
+
+class ListingClient:
+    def __init__(self, reply, names):
+        self.models = ListingModels(reply, names)
+
+
+OK = response('{"action":"finish","args":{}}')
+
+
+def test_model_comes_from_env_when_set(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-custom")
+    assert GeminiPlanner(client=StubClient(OK)).name == "gemini:gemini-custom"
+
+
+def test_model_is_the_first_preferred_one_the_key_can_use(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    client = ListingClient(OK, ["gemini-1.5-pro", "gemini-flash-latest", "gemini-2.0-flash"])
+    assert GeminiPlanner(client=client).name == "gemini:gemini-flash-latest"
+
+
+def test_an_unknown_lineup_falls_back_to_the_newest_flash(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    client = ListingClient(OK, ["gemini-3.0-flash", "gemini-3.1-flash", "gemini-3.1-flash-lite"])
+    assert GeminiPlanner(client=client).name == "gemini:gemini-3.1-flash"
+
+
+def test_a_listing_failure_does_not_stop_the_planner(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    from agent.llm import PREFERRED_MODELS
+    assert GeminiPlanner(client=StubClient(OK)).name == f"gemini:{PREFERRED_MODELS[0]}"
+
+
+def flaky(errors):
+    """A reply function that raises each queued error once, then succeeds."""
+    queue = list(errors)
+
+    def reply(_contents):
+        if queue:
+            raise queue.pop(0)
+        return OK
+    return reply
+
+
+def test_a_rate_limit_waits_for_the_servers_own_delay():
+    slept = []
+    err = FakeAPIError(429, "RESOURCE_EXHAUSTED", "rate limited", details={"error": {
+        "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo",
+                     "retryDelay": "17s"}]}})
+    planner = GeminiPlanner(client=StubClient(flaky([err])), model="m", sleep=slept.append)
+
+    assert planner.decide("sys", "ctx").action == "finish"
+    assert slept == [17.0]
+    assert planner.waits == [(429, 17.0)]
+
+
+def test_without_a_delay_it_backs_off_exponentially():
+    slept = []
+    errs = [FakeAPIError(503, "UNAVAILABLE") for _ in range(3)]
+    planner = GeminiPlanner(client=StubClient(flaky(errs)), model="m", sleep=slept.append)
+
+    planner.decide("sys", "ctx")
+    assert slept == [2.0, 4.0, 8.0]
+
+
+def test_a_bad_request_is_not_retried():
+    slept = []
+    planner = GeminiPlanner(client=StubClient(flaky([FakeAPIError(400, "INVALID_ARGUMENT")])),
+                            model="m", sleep=slept.append)
+    with pytest.raises(FakeAPIError):
+        planner.decide("sys", "ctx")
+    assert slept == []
+
+
+def test_a_daily_quota_is_not_waited_out():
+    slept = []
+    err = FakeAPIError(429, "RESOURCE_EXHAUSTED",
+                       "Quota exceeded for metric: generate_content_free_tier_requests, "
+                       "limit: 250, per day")
+    planner = GeminiPlanner(client=StubClient(flaky([err])), model="m", sleep=slept.append)
+    with pytest.raises(FakeAPIError):
+        planner.decide("sys", "ctx")
+    assert slept == []
+
+
+def test_retries_stop_at_the_attempt_limit():
+    slept = []
+    errs = [FakeAPIError(500, "INTERNAL") for _ in range(10)]
+    planner = GeminiPlanner(client=StubClient(flaky(errs)), model="m",
+                            max_attempts=3, sleep=slept.append)
+    with pytest.raises(FakeAPIError):
+        planner.decide("sys", "ctx")
+    assert len(slept) == 2
+
+
+def test_the_output_cap_leaves_room_for_reasoning():
+    client = StubClient(OK)
+    GeminiPlanner(client=client, model="m").decide("sys", "ctx")
+    assert client.models.calls[0]["config"].max_output_tokens >= 4096
+
+
+def test_dotenv_is_loaded_but_never_overrides_the_shell(tmp_path, monkeypatch):
+    from run_agent import load_env
+
+    env = tmp_path / ".env"
+    env.write_text("GEMINI_API_KEY=from-file\nGEMINI_MODEL=file-model\n", encoding="utf-8")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_MODEL", "shell-model")
+
+    assert load_env(env) is True
+    import os
+    assert os.environ["GEMINI_API_KEY"] == "from-file"
+    assert os.environ["GEMINI_MODEL"] == "shell-model"
+
+
+def test_a_missing_dotenv_is_not_an_error(tmp_path):
+    from run_agent import load_env
+    assert load_env(tmp_path / "nope.env") is False
+
+
+def test_preset_answers_match_any_listed_phrasing():
+    from tools.human import HumanChannel
+
+    human = HumanChannel(interactive=False,
+                         preset={"amount|total|figure": "96400.00"})
+    assert human.ask("Which total should I record?").data["answer"] == "96400.00"
+    assert human.ask("Conflicting values for 'amount'").data["answer"] == "96400.00"
+    assert not human.ask("Should I book a meeting?").ok

@@ -206,9 +206,21 @@ It exists so that the loop, the recovery paths and the verification step are all
 testable and demonstrable without a network call. To use the real planner:
 
 ```bash
-cp .env.example .env    # add GEMINI_API_KEY
+cp .env.example .env                  # add GEMINI_API_KEY (aistudio.google.com/apikey)
+python scripts/check_gemini.py        # preflight: key, available models, one test call
 python run_agent.py --scenario happy --planner gemini
 ```
+
+`.env` is loaded at startup but never overrides a variable already set in the
+shell. If `GEMINI_MODEL` is not set, the planner asks the API which models the key
+can use and picks the first known-good one, so a retired model name does not
+break a run. Rate limits and transient server errors are waited out, using the
+server's own retry delay when it sends one; a daily quota is reported rather
+than retried.
+
+`python scripts/record_llm_demos.py` records model-driven runs, with video, into
+the run viewer. Runs are kept as they happened — a run that escalates or fails is
+recorded, not retried until it looks good.
 
 ---
 
@@ -262,7 +274,7 @@ survive extraction, the form, the database and verification as a string.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 120 tests, ~3s
+python -m pytest tests/ -q                # 133 tests, ~4s
 python -m pytest tests/ -m integration    # + 7 runs against the real app and browser (~1 min)
 ```
 

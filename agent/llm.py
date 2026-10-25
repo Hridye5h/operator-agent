@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 @dataclass
@@ -81,6 +82,35 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _retry_after(exc: Exception) -> float | None:
+    """The server's own retry delay (google.rpc.RetryInfo), if it sent one."""
+    def find(node: Any) -> str | None:
+        if isinstance(node, dict):
+            if "retryDelay" in node:
+                return str(node["retryDelay"])
+            for value in node.values():
+                hit = find(value)
+                if hit:
+                    return hit
+        elif isinstance(node, list):
+            for value in node:
+                hit = find(value)
+                if hit:
+                    return hit
+        return None
+
+    raw = find(getattr(exc, "details", None))
+    if not raw:
+        return None
+    m = re.match(r"^\s*([\d.]+)\s*s?\s*$", raw)
+    return min(float(m.group(1)), 90.0) if m else None
+
+
+def _is_daily_quota(exc: Exception) -> bool:
+    text = f"{getattr(exc, 'message', '') or ''} {getattr(exc, 'details', '') or ''}"
+    return bool(re.search(r"per ?day|PerDay|daily", text, re.I))
+
+
 def _why_empty(response: Any) -> str:
     """Explain an empty model response using whatever the SDK exposed."""
     reason = getattr(response, "prompt_feedback", None)
@@ -102,39 +132,91 @@ class Planner(Protocol):
     def decide(self, system: str, context: str) -> Decision: ...
 
 
+#: Tried in order when no model is configured; the first one this key can use wins.
+PREFERRED_MODELS = ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash")
+
+#: HTTP codes worth waiting out: rate limits and transient server faults.
+RETRYABLE = {429, 500, 502, 503, 504}
+
+
 class GeminiPlanner:
-    """Real LLM planner."""
+    """Real LLM planner, hardened for a live API.
 
-    def __init__(self, model: str = "gemini-2.0-flash", api_key: str | None = None,
-                 client: Any = None, max_tokens: int = 1024) -> None:
-        self._model = model
+    * The model is configurable (``GEMINI_MODEL``). If unset, the planner asks
+      the API which models this key can use and picks the first known-good one,
+      so a retired model name does not break a run.
+    * Rate limits and transient server errors are waited out, honouring the
+      server's own retry delay when it gives one. A daily quota is not retried:
+      waiting will not bring it back.
+    * The output cap is generous. Newer models reason before answering and that
+      reasoning counts against the cap; a tight cap returns an empty reply.
+    """
+
+    def __init__(self, model: str | None = None, api_key: str | None = None,
+                 client: Any = None, max_tokens: int = 8192, max_attempts: int = 5,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         self._max_tokens = max_tokens
-        self.name = f"gemini:{model}"
+        self._max_attempts = max_attempts
+        self._sleep = sleep
+        #: (http code, seconds) for every wait, so a run can report them.
+        self.waits: list[tuple[int, float]] = []
 
-        if client is not None:          # injected for tests; no key, no network
-            self._client = client
-            return
+        if client is None:
+            from google import genai  # imported lazily so the offline path needs no SDK
 
-        from google import genai  # imported lazily so the offline path needs no SDK
+            key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            if not key:
+                raise RuntimeError("GEMINI_API_KEY is not set")
+            client = genai.Client(api_key=key)
+        self._client = client
 
-        key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if not key:
-            raise RuntimeError("GEMINI_API_KEY is not set")
-        self._client = genai.Client(api_key=key)
+        self._model = model or os.environ.get("GEMINI_MODEL") or self._pick_model()
+        self.name = f"gemini:{self._model}"
+
+    def _pick_model(self) -> str:
+        """The first preferred model this key can actually call."""
+        try:
+            available = {
+                m.name.split("/")[-1] for m in self._client.models.list()
+                if "generateContent" in (getattr(m, "supported_actions", None) or [])
+            }
+        except Exception:
+            return PREFERRED_MODELS[0]
+        for name in PREFERRED_MODELS:
+            if name in available:
+                return name
+        flash = sorted(n for n in available if "flash" in n and "lite" not in n
+                       and "image" not in n and "tts" not in n)
+        return flash[-1] if flash else PREFERRED_MODELS[0]
 
     def decide(self, system: str, context: str) -> Decision:
         from google.genai import types
 
-        response = self._client.models.generate_content(
-            model=self._model,
-            contents=context,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=0.0,
-                response_mime_type="application/json",
-                max_output_tokens=self._max_tokens,
-            ),
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=0.0,
+            response_mime_type="application/json",
+            max_output_tokens=self._max_tokens,
         )
+
+        delay = 2.0
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                response = self._client.models.generate_content(
+                    model=self._model, contents=context, config=config)
+                break
+            except Exception as exc:
+                code = getattr(exc, "code", None)
+                if code not in RETRYABLE or attempt == self._max_attempts \
+                        or _is_daily_quota(exc):
+                    raise
+                wait = _retry_after(exc) or delay
+                self.waits.append((code, wait))
+                print(f"       gemini {code} {getattr(exc, 'status', '') or ''}: "
+                      f"waiting {wait:.0f}s (attempt {attempt}/{self._max_attempts})",
+                      flush=True)
+                self._sleep(wait)
+                delay = min(delay * 2, 60.0)
 
         text = getattr(response, "text", None)
         if not text:

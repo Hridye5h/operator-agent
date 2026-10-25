@@ -52,8 +52,14 @@ class HumanChannel:
                           display=f"human answered: {answer}")
 
     def _answer(self, question: str, options: list[str] | None, rendered: str) -> str | None:
+        # A preset key may list alternatives ("amount|total|figure"), because a
+        # language model will not always phrase the question the way a rule
+        # does. Keys are tried in order, so put the most specific first.
+        lowered = question.lower()
         for key, value in self.preset.items():
-            if key.lower() in question.lower():
+            if key == "*":
+                continue
+            if any(alt.strip().lower() in lowered for alt in key.split("|") if alt.strip()):
                 return value
         if "*" in self.preset:
             return self.preset["*"]

@@ -1,16 +1,16 @@
 {
-  "run_id": "20261023-224950-937a13",
+  "run_id": "20261025-180328-69e35c",
   "goal": "Record invoice GX-88214 from Globex Industries as a payable in the internal AP system and confirm it was stored correctly.",
-  "started_at": "2026-10-23T17:19:50.264+00:00",
-  "duration_s": 5.25,
+  "started_at": "2026-10-25T12:33:28.466+00:00",
+  "duration_s": 4.84,
   "outcome": "completed",
-  "step_count": 22,
+  "step_count": 23,
   "steps": [
     {
       "index": 0,
       "kind": "goal",
       "summary": "Record invoice GX-88214 from Globex Industries as a payable in the internal AP system and confirm it was stored correctly.",
-      "at": "2026-10-23T17:19:50.264+00:00",
+      "at": "2026-10-25T12:33:28.466+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -18,8 +18,8 @@
     {
       "index": 1,
       "kind": "plan",
-      "summary": "planner downgraded: no GEMINI_API_KEY configured \u2014 using deterministic planner (RuntimeError)",
-      "at": "2026-10-23T17:19:50.265+00:00",
+      "summary": "planner=scripted, max_steps=14",
+      "at": "2026-10-25T12:33:28.992+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -27,8 +27,8 @@
     {
       "index": 2,
       "kind": "plan",
-      "summary": "planner=scripted, max_steps=14",
-      "at": "2026-10-23T17:19:50.838+00:00",
+      "summary": "procedure=record_vendor_invoice: Record a supplier's invoice as a payable in Accounts Payable.",
+      "at": "2026-10-25T12:33:28.993+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -36,8 +36,8 @@
     {
       "index": 3,
       "kind": "decision",
-      "summary": "Need to see what documents exist.",
-      "at": "2026-10-23T17:19:50.839+00:00",
+      "summary": "See which documents exist.",
+      "at": "2026-10-25T12:33:28.994+00:00",
       "detail": {
         "action": "list_invoices",
         "confidence": 1.0
@@ -49,7 +49,7 @@
       "index": 4,
       "kind": "tool_call",
       "summary": "list_invoices()",
-      "at": "2026-10-23T17:19:50.839+00:00",
+      "at": "2026-10-25T12:33:28.994+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -58,19 +58,20 @@
       "index": 5,
       "kind": "observation",
       "summary": "list_invoices: 6 document(s):\n  globex_GX-88214.pdf | Globex Industries | GX-88214 | issued 2026-04-02\n  globex_GX-90155.pdf | Globex Industries | GX-90155 | issued 2026-08-11\n  initech_IN-5521.pdf | Initech Software Services | IN-5521 | issued 2026-05-19... [492 chars]",
-      "at": "2026-10-23T17:19:50.901+00:00",
+      "at": "2026-10-25T12:33:29.028+00:00",
       "detail": {
         "ok": true,
-        "retriable": false
+        "retriable": false,
+        "error_kind": null
       },
-      "elapsed_ms": 60,
+      "elapsed_ms": 33,
       "artifacts": []
     },
     {
       "index": 6,
       "kind": "decision",
-      "summary": "The request names invoice GX-88214.",
-      "at": "2026-10-23T17:19:50.903+00:00",
+      "summary": "The request points at globex_GX-88214.pdf.",
+      "at": "2026-10-25T12:33:29.029+00:00",
       "detail": {
         "action": "read_invoice",
         "confidence": 1.0
@@ -81,8 +82,8 @@
     {
       "index": 7,
       "kind": "tool_call",
-      "summary": "read_invoice(invoice_number='GX-88214')",
-      "at": "2026-10-23T17:19:50.906+00:00",
+      "summary": "read_invoice(file='globex_GX-88214.pdf')",
+      "at": "2026-10-25T12:33:29.030+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -90,20 +91,21 @@
     {
       "index": 8,
       "kind": "observation",
-      "summary": "read_invoice: source: globex_GX-88214.pdf\nvendor: Globex Industries\ninvoice_number: GX-88214\nissued: 2026-04-02\ndue_date: 2026-05-02\namount: 126500.0",
-      "at": "2026-10-23T17:19:50.922+00:00",
+      "summary": "read_invoice: source: globex_GX-88214.pdf\nvendor: Globex Industries\ninvoice_number: GX-88214\nissued: 2026-04-02\ndue_date: 2026-05-02\namount: 126500.00",
+      "at": "2026-10-25T12:33:29.033+00:00",
       "detail": {
         "ok": true,
-        "retriable": false
+        "retriable": false,
+        "error_kind": null
       },
-      "elapsed_ms": 14,
+      "elapsed_ms": 2,
       "artifacts": []
     },
     {
       "index": 9,
       "kind": "decision",
-      "summary": "Enter the payable into the internal system.",
-      "at": "2026-10-23T17:19:50.923+00:00",
+      "summary": "Enter the record into the system of record.",
+      "at": "2026-10-25T12:33:29.034+00:00",
       "detail": {
         "action": "submit_payable",
         "confidence": 1.0
@@ -115,7 +117,7 @@
       "index": 10,
       "kind": "decision",
       "summary": "approval required before submit_payable: amount 126,500.00 exceeds the 100,000 auto-approval limit",
-      "at": "2026-10-23T17:19:50.924+00:00",
+      "at": "2026-10-25T12:33:29.034+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -124,7 +126,7 @@
       "index": 11,
       "kind": "decision",
       "summary": "approved by human: submit_payable",
-      "at": "2026-10-23T17:19:50.925+00:00",
+      "at": "2026-10-25T12:33:29.035+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -133,7 +135,7 @@
       "index": 12,
       "kind": "tool_call",
       "summary": "submit_payable(vendor='Globex Industries', invoice_number='GX-88214', amount='126500.00', due_date='2026-05-02')",
-      "at": "2026-10-23T17:19:50.926+00:00",
+      "at": "2026-10-25T12:33:29.035+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -142,12 +144,13 @@
       "index": 13,
       "kind": "observation",
       "summary": "submit_payable: ERROR (retriable): temporary: SYS-503: accounting service temporarily unavailable, please retry in a moment.",
-      "at": "2026-10-23T17:19:51.619+00:00",
+      "at": "2026-10-25T12:33:29.603+00:00",
       "detail": {
         "ok": false,
-        "retriable": true
+        "retriable": true,
+        "error_kind": "transient"
       },
-      "elapsed_ms": 692,
+      "elapsed_ms": 567,
       "artifacts": [
         "01-form-filled-gx-88214.png",
         "02-after-submit-gx-88214.png"
@@ -156,8 +159,8 @@
     {
       "index": 14,
       "kind": "decision",
-      "summary": "Previous submission failed transiently; retrying.",
-      "at": "2026-10-23T17:19:51.621+00:00",
+      "summary": "Previous attempt failed transiently; retrying.",
+      "at": "2026-10-25T12:33:29.604+00:00",
       "detail": {
         "action": "submit_payable",
         "confidence": 1.0
@@ -169,7 +172,7 @@
       "index": 15,
       "kind": "tool_call",
       "summary": "submit_payable(vendor='Globex Industries', invoice_number='GX-88214', amount='126500.00', due_date='2026-05-02')",
-      "at": "2026-10-23T17:19:51.623+00:00",
+      "at": "2026-10-25T12:33:29.604+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -178,12 +181,13 @@
       "index": 16,
       "kind": "observation",
       "summary": "submit_payable: submitted OK -> record #1 (GX-88214, 126500.00, 2026-05-02)",
-      "at": "2026-10-23T17:19:52.085+00:00",
+      "at": "2026-10-25T12:33:29.985+00:00",
       "detail": {
         "ok": true,
-        "retriable": false
+        "retriable": false,
+        "error_kind": null
       },
-      "elapsed_ms": 461,
+      "elapsed_ms": 380,
       "artifacts": [
         "03-form-filled-gx-88214.png",
         "04-after-submit-gx-88214.png"
@@ -192,8 +196,8 @@
     {
       "index": 17,
       "kind": "decision",
-      "summary": "Confirm the record actually landed and matches.",
-      "at": "2026-10-23T17:19:52.087+00:00",
+      "summary": "Confirm the record landed and matches what was sent.",
+      "at": "2026-10-25T12:33:29.986+00:00",
       "detail": {
         "action": "verify_payable",
         "confidence": 1.0
@@ -204,8 +208,8 @@
     {
       "index": 18,
       "kind": "tool_call",
-      "summary": "verify_payable(invoice_number='GX-88214', expect_amount='126500.00', expect_due_date='2026-05-02')",
-      "at": "2026-10-23T17:19:52.088+00:00",
+      "summary": "verify_payable(invoice_number='GX-88214', expect_vendor='Globex Industries', expect_amount='126500.00', expect_due_date='2026-05-02')",
+      "at": "2026-10-25T12:33:29.987+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
@@ -213,27 +217,35 @@
     {
       "index": 19,
       "kind": "observation",
-      "summary": "verify_payable: VERIFIED record #1: Globex Industries, GX-88214, 126500.00, due 2026-05-02",
-      "at": "2026-10-23T17:19:55.509+00:00",
+      "summary": "verify_payable: VERIFIED record #1: Globex Industries, GX-88214, 126500.00, due 2026-05-02 (compared: invoice_number, vendor, amount, due_date)",
+      "at": "2026-10-25T12:33:32.200+00:00",
       "detail": {
         "ok": true,
-        "retriable": false
+        "retriable": false,
+        "error_kind": null
       },
-      "elapsed_ms": 3419,
+      "elapsed_ms": 2212,
       "artifacts": []
     },
     {
       "index": 20,
       "kind": "verification",
-      "summary": "VERIFIED record #1: Globex Industries, GX-88214, 126500.00, due 2026-05-02",
-      "at": "2026-10-23T17:19:55.511+00:00",
+      "summary": "VERIFIED record #1: Globex Industries, GX-88214, 126500.00, due 2026-05-02 (compared: invoice_number, vendor, amount, due_date)",
+      "at": "2026-10-25T12:33:32.202+00:00",
       "detail": {
         "id": 1,
         "vendor": "Globex Industries",
         "invoice_number": "GX-88214",
         "amount": 126500.0,
         "due_date": "2026-05-02",
-        "entered_at": "2026-10-23T22:49:51"
+        "entered_at": "2026-10-25T18:03:29",
+        "verified_fields": [
+          "amount",
+          "due_date",
+          "invoice_number",
+          "vendor"
+        ],
+        "unverifiable_fields": []
       },
       "elapsed_ms": null,
       "artifacts": []
@@ -242,10 +254,21 @@
       "index": 21,
       "kind": "complete",
       "summary": "Outcome verified.",
-      "at": "2026-10-23T17:19:55.512+00:00",
+      "at": "2026-10-25T12:33:32.203+00:00",
       "detail": {},
       "elapsed_ms": null,
       "artifacts": []
+    },
+    {
+      "index": 22,
+      "kind": "plan",
+      "summary": "browser session recorded",
+      "at": "2026-10-25T12:33:33.302+00:00",
+      "detail": {},
+      "elapsed_ms": null,
+      "artifacts": [
+        "run.webm"
+      ]
     }
   ]
 }
