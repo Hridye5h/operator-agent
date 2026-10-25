@@ -22,10 +22,11 @@ around them:
   read back before the run can finish, and each verify call is checked against
   the arguments of the write it names, not against whatever the planner chose
   to pass, so a verify call cannot quietly check fewer fields or fewer records.
-* **Contested values cannot be guessed.** While a reader has reported a field
-  as contested, no write that sets that field may run — whether the planner left
-  it blank or filled in a value of its own. Only a human answer naming one of
-  the candidates resolves it.
+* **Contested values cannot be guessed.** A contest belongs to the record it
+  was read from. Until a human answer names one of the candidates, no write to
+  that record may set the field — blank or with a value of the planner's own —
+  and reading other documents does not clear it. Once resolved, a write to that
+  record must carry exactly the value the human chose.
 * **Failure is an observation.** Tools never raise into the loop; they return a
   result the planner can reason about, including whether a retry is sensible.
 """
@@ -37,7 +38,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from agent.llm import Decision, Planner
+from agent.llm import Decision, Planner, UnusableReply
 from agent.tools import Tool, ToolRegistry, ToolResult
 from agent.trace import Trace
 
@@ -182,12 +183,17 @@ class Agent:
                 try:
                     decision = self.planner.decide(SYSTEM_PROMPT, probe)
                     break
-                except Exception as exc:
+                except UnusableReply as exc:
                     planner_error = f"{type(exc).__name__}: {exc}"
                     trace.add("error",
                               f"planner reply unusable "
                               f"(attempt {attempt + 1}/{self.config.planner_retries + 1}): "
                               f"{planner_error}")
+                except Exception as exc:
+                    # Not a bad answer but no answer: re-prompting cannot help.
+                    planner_error = f"{type(exc).__name__}: {exc}"
+                    trace.add("error", f"planner unavailable: {planner_error}")
+                    break
 
             if self.planner.name != planner_name:
                 trace.add("plan", f"planner={self.planner.name} "
@@ -329,16 +335,24 @@ class Agent:
         verification checks the record against what was written. Only a human
         answer naming one of the candidates clears the contest.
         """
-        contested = state.get("_contested")
-        if not contested or tool is None or tool.kind != "write":
+        if tool is None or tool.kind != "write":
             return None
-        name = contested.get("field")
-        if name not in tool.params:
-            return None
-        options = ", ".join(f"{c.get('label')}={c.get('value')}"
-                            for c in contested.get("candidates", []))
-        return (f"Refusing {tool.name}: '{name}' is contested ({options}) and has "
-                f"not been resolved by a human. Ask with ask_human before writing.")
+        for contest in state.get("_contests", []):
+            name = contest["field"]
+            if name not in tool.params or not _same_record(contest["key"], args, tool):
+                continue
+            if contest["chosen"] is None:
+                options = ", ".join(f"{c.get('label')}={c.get('value')}"
+                                    for c in contest["candidates"])
+                return (f"Refusing {tool.name}: '{name}' is contested ({options}) and "
+                        f"has not been resolved by a human. Ask with ask_human before "
+                        f"writing.")
+            value = str(args.get(name, "") or "").strip()
+            if value != str(contest["chosen"]).strip():
+                return (f"Refusing {tool.name}: a human chose {contest['chosen']} for "
+                        f"'{name}' on this record, and this call would write "
+                        f"{value or 'nothing'}.")
+        return None
 
     # -- approval ----------------------------------------------------------
     def _approval_gate(self, action: str, args: dict[str, Any],
@@ -406,7 +420,7 @@ class Agent:
             return "no_human"
 
         answer = str((verdict.data or {}).get("answer", "")).strip().lower()
-        if answer.startswith(("approve", "yes", "y", "ok")):
+        if _is_approval(answer):
             granted.add(key)
             trace.add("decision", f"approved by human: {action}")
             return None
@@ -467,6 +481,10 @@ class Agent:
         return args
 
     # -- absorbing results -------------------------------------------------
+    def _record_keys(self) -> set[str]:
+        """Parameters that name a record: what the verify tools look records up by."""
+        return {p for t in self.tools.by_kind("verify") for p in _identity(t)}
+
     def _absorb(self, kind: str | None, result: ToolResult, state: dict[str, Any]) -> None:
         data = result.data
         if not isinstance(data, dict):
@@ -474,26 +492,48 @@ class Agent:
 
         if kind == "read":
             fields = data.get("fields")
-            if isinstance(fields, dict):
-                for key, value in fields.items():
-                    if value not in (None, "") and not key.startswith(_INTERNAL):
-                        state[key] = value
+            fields = fields if isinstance(fields, dict) else {}
+            for key, value in fields.items():
+                if value not in (None, "") and not key.startswith(_INTERNAL):
+                    state[key] = value
 
+            # Contests are kept per record for the whole run. Reading another
+            # document must not clear one, or a planner could read its way past
+            # the guard; reading the same one again must not forget the answer.
+            state.pop("_contested", None)
             contested = data.get("contested")
             if isinstance(contested, dict) and contested.get("field"):
-                state["_contested"] = contested
-                state.pop(contested["field"], None)     # a contested value is not established
-            else:
-                state.pop("_contested", None)
+                record = {k: str(fields[k]).strip() for k in self._record_keys()
+                          if fields.get(k) not in (None, "")}
+                candidates = contested.get("candidates", [])
+                values = [str(c.get("value")) for c in candidates]
+                contests = state.get("_contests", [])
+                known = next((c for c in contests if c["field"] == contested["field"]
+                              and c["key"] == record
+                              and [str(x.get("value")) for x in c["candidates"]] == values),
+                             None)
+                if known is None:
+                    known = {"field": contested["field"], "candidates": candidates,
+                             "message": contested.get("message", ""), "key": record,
+                             "chosen": None}
+                    state["_contests"] = contests + [known]
+                if known["chosen"] is None:
+                    state["_contested"] = known
+                    state.pop(known["field"], None)     # not established
+                else:
+                    state[known["field"]] = known["chosen"]
 
         elif kind == "ask":
             answer = str(data.get("answer", ""))
-            contested = state.get("_contested")
-            if contested:
-                chosen = _resolve_choice(answer, contested.get("candidates", []))
+            current = state.get("_contested")
+            open_ = [c for c in state.get("_contests", []) if c["chosen"] is None]
+            for contest in sorted(open_, key=lambda c: c is not current):
+                chosen = _resolve_choice(answer, contest["candidates"])
                 if chosen is not None:
-                    state[contested["field"]] = chosen
-                    state.pop("_contested", None)
+                    contest["chosen"] = chosen
+                    if contest is current:
+                        state[contest["field"]] = chosen
+                        state.pop("_contested", None)
                     return
             # The reply did not name one of the values in question, so it is
             # guidance, not a resolution. Reading a figure out of whatever digits
@@ -527,6 +567,33 @@ def _public(state: dict[str, Any], key: str) -> bool:
 def _identity(tool: Tool) -> list[str]:
     """A verify tool's non-expectation parameters: what names the record."""
     return [p for p in tool.params if not p.startswith("expect_")]
+
+
+def _same_record(key: dict[str, str], args: dict[str, Any], tool: Tool) -> bool:
+    """Whether a write could be to the record a contest belongs to.
+
+    Only a write that names a different record is exempt; one that leaves the
+    identifying fields out counts as the same record.
+    """
+    for p, v in key.items():
+        if p in tool.params and args.get(p) not in (None, "") \
+                and str(args[p]).strip() != v:
+            return False
+    return True
+
+
+_YES = {"approve", "approved", "yes", "y", "ok", "okay"}
+_NO = re.compile(r"\b(no|not|don'?t|never|decline\w*|reject\w*|den(?:y|ied)|stop|hold|wait"
+                 r"|cancel\w*|but|only|if|unless|until|after|first|later|check|ask)\b|n't\b")
+
+
+def _is_approval(answer: str) -> bool:
+    """Only a plain yes approves: a reply that opens with one and carries no
+    negation or condition. Anything else is a refusal, because approval gates
+    money and a conditional yes is not a yes."""
+    text = answer.strip().lower()
+    words = re.findall(r"[a-z]+", text)
+    return bool(words) and words[0] in _YES and not _NO.search(text)
 
 
 def _target_write(tool: Tool | None, planner_args: dict[str, Any],

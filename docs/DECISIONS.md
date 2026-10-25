@@ -391,3 +391,56 @@ would have gone to it too.
 `start_environment` now refuses to start if anything already answers on the
 port, and says what probably happened. The recorder kills the whole process
 tree on a timeout and does not publish the partial run.
+
+---
+
+### 25. A contest belongs to its record, and the answer is binding
+
+Two ways round the "no guessing" guarantee, found by attacking it rather than
+by a failing run:
+
+* Any clean read cleared the open contest. Read the invoice with two totals,
+  read any other invoice, then write the first one with a guessed amount: the
+  guard had nothing left to check.
+* After a human chose, the contest was deleted, so a write carrying the *other*
+  candidate went through, and verified clean, because verification compares the
+  record with what was written.
+
+Contests are now kept for the whole run, each tied to its record by the fields
+the verify tools look records up by (`invoice_number`, `gstin`). A write to that
+record, or one that leaves the identifying fields out, is refused until a human
+resolves the contest, and afterwards unless it carries exactly the value they
+chose. Reading the same document again keeps the answer; another record can
+still be written. Three of the four new tests fail on the old loop.
+
+---
+
+### 26. Only a plain yes approves
+
+Approval accepted any reply starting with "approve", "yes", "ok" or the letter
+"y". So "you decide" approved a ₹126,500 payable, as did "yes, but do not
+submit yet". A reply now approves only if it opens with a yes-word and carries
+no negation or condition (`not`, `but`, `only`, `if`, `first`, ...). The cost is
+that "yes I don't mind" is read as a refusal and the person is asked to be
+plain. A gate on money should fail that way round.
+
+---
+
+### 27. A verification must name a record and compare something
+
+With an empty key the read-back endpoint lists every record, and empty
+expectations are skipped. So `verify_payable()` called before anything was read
+checked the only record in the table against nothing, reported VERIFIED, and
+the loop accepted `finish`. Verification now refuses without the record's key
+or with nothing to compare, before it queries anything.
+
+---
+
+### 28. A bad answer is re-prompted; no answer is not
+
+When the planner's daily quota ran out mid-run, the loop logged "planner reply
+unusable" three times and re-sent the prompt with "your previous reply could not
+be used". Re-prompting helps when a model answered with prose; it cannot help
+when the API refused, and the planner has already retried that internally.
+Unusable replies now raise `UnusableReply` and are re-prompted; anything else
+ends the run at once as "planner unavailable".

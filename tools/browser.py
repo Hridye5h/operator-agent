@@ -215,6 +215,15 @@ def _compare(record: dict[str, Any], expected: dict[str, Any]) -> list[str]:
 def _verify(endpoint: str, key: str, value: str, expected: dict[str, Any],
             describe) -> ToolResult:
     """Read one record back by key and compare it with what was intended."""
+    # With no key the endpoint lists every record, and with no expectations the
+    # comparison is empty; either would "verify" whatever happens to be there.
+    if not str(value or "").strip():
+        return ToolResult(False, retriable=False, error_kind="invalid",
+                          error=f"cannot verify without the record's {key}")
+    if not any(v not in (None, "") for v in expected.values()):
+        return ToolResult(False, retriable=False, error_kind="invalid",
+                          error=f"nothing to compare for {key}={value}: no expected "
+                                f"values. Read the source or write the record first.")
     try:
         resp = httpx.get(f"{BASE_URL}{endpoint}", params={key: value}, timeout=10.0)
         resp.raise_for_status()

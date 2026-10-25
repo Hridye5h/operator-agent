@@ -116,7 +116,7 @@ weaker or misbehaving planner must not be able to get around these:
 |---|---|
 | A run cannot finish until every record it wrote has been read back by a verify tool | reporting success on the strength of a success page, or after checking one record of a batch |
 | Verification compares every field that was actually written | a planner verifying less than it wrote |
-| A contested value cannot be written until a human resolves it | a planner — or a model — guessing between two figures |
+| A contested value cannot be written until a human resolves it — and then only as the value they chose | a planner — or a model — guessing between two figures, or reading another document to make the question go away |
 | A declined action is never executed or re-asked | interrogating a person until they give in |
 
 **Company procedures are data.** How the organisation does each kind of request —
@@ -178,7 +178,8 @@ the demo requires human sign-off for payables over ₹100,000. The loop consults
 the policy; the policy decides the rule, so no money logic lives in the agent. A
 refusal is remembered: a declined action is never executed, never re-escalated
 to the same person, and a planner that keeps proposing it is stopped rather than
-allowed to spin. A policy that throws fails closed.
+allowed to spin. Only a plain yes approves — "you decide" or "yes, but check
+with finance first" is a refusal. A policy that throws fails closed.
 
 ---
 
@@ -282,7 +283,7 @@ survive extraction, the form, the database and verification as a string.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 148 tests, a few seconds
+python -m pytest tests/ -q                # 176 tests, a few seconds
 python -m pytest tests/ -m integration    # + 7 runs against the real app and browser (~1 min)
 ```
 

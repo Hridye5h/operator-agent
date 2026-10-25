@@ -53,7 +53,8 @@ tool = registry.get(decision.action)
 target = the write a verify call names (else the latest unverified one)
 args = bind(decision, tool, state, target)                         # schema-driven
 
-if tool.kind == "write" and a field it sets is contested:          # gate 2
+if tool.kind == "write" and a field it sets is contested on that   # gate 2
+        record (unresolved, or not the value the human chose):
     refuse, tell the planner why, continue
 if approval required and not granted:                              # gate 3
     ask; on decline remember it, never execute

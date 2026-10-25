@@ -23,6 +23,16 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 
+class UnusableReply(ValueError):
+    """The planner answered, but not with a decision the agent can use.
+
+    Worth re-prompting: a model that replied with prose or nothing will often
+    answer properly when shown what went wrong. Anything else a planner raises
+    (a transport failure, an exhausted quota) has already been retried inside
+    the planner and is not.
+    """
+
+
 @dataclass
 class Decision:
     """One planner step: either call a tool, or stop."""
@@ -35,10 +45,10 @@ class Decision:
     def parse(raw: str) -> "Decision":
         blob = _extract_json(raw)
         if blob is None:
-            raise ValueError(f"planner did not return JSON: {raw[:200]!r}")
+            raise UnusableReply(f"planner did not return JSON: {raw[:200]!r}")
         action = blob.get("action") or blob.get("tool") or ""
         if not action:
-            raise ValueError(f"planner returned no action: {blob}")
+            raise UnusableReply(f"planner returned no action: {blob}")
         args = blob.get("args") or blob.get("arguments") or {}
         if not isinstance(args, dict):
             args = {}
@@ -264,7 +274,7 @@ class GeminiPlanner:
             # sends the agent into a pointless re-prompt loop. Say what the
             # model actually did: refused, ran out of tokens, or returned
             # nothing.
-            raise RuntimeError(f"model returned no text ({_why_empty(response)})")
+            raise UnusableReply(f"model returned no text ({_why_empty(response)})")
         return Decision.parse(text)
 
 

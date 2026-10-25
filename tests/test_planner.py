@@ -16,7 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from agent.core import Agent, AgentConfig  # noqa: E402
 from agent.llm import (Decision, GeminiPlanner, ScriptedPlanner,  # noqa: E402
-                       _extract_json, build_planner)
+                       UnusableReply, _extract_json, build_planner)
 from agent.tools import ToolRegistry, ToolResult  # noqa: E402
 from agent.trace import Trace  # noqa: E402
 
@@ -123,13 +123,13 @@ def test_gemini_planner_needs_no_key_when_a_client_is_supplied():
 
 def test_gemini_planner_reports_a_blocked_prompt_clearly():
     planner = GeminiPlanner(client=StubClient(response(text=None, block_reason="SAFETY")))
-    with pytest.raises(RuntimeError, match="prompt blocked: SAFETY"):
+    with pytest.raises(UnusableReply, match="prompt blocked: SAFETY"):
         planner.decide("sys", "ctx")
 
 
 def test_gemini_planner_reports_a_truncated_reply_clearly():
     planner = GeminiPlanner(client=StubClient(response(text=None, finish_reason="MAX_TOKENS")))
-    with pytest.raises(RuntimeError, match="MAX_TOKENS"):
+    with pytest.raises(UnusableReply, match="MAX_TOKENS"):
         planner.decide("sys", "ctx")
 
 
@@ -201,6 +201,25 @@ def test_a_planner_that_never_recovers_fails_cleanly(trace):
     assert result.status == "failed"
     assert not result.verified
     assert trace.outcome == "failed"
+
+
+def test_an_unavailable_planner_is_not_re_prompted(trace):
+    """A quota or transport failure is not a bad answer; asking again with
+    'your reply could not be used' is wrong and only burns more quota."""
+    attempts = {"n": 0}
+
+    def reply(_contents):
+        attempts["n"] += 1
+        raise ConnectionError("tls handshake failed")
+
+    planner = GeminiPlanner(client=StubClient(reply), model="m")
+    agent = Agent(planner, registry_with_verify(), AgentConfig(max_steps=4, planner_retries=2))
+
+    result = agent.run("do the thing", trace)
+
+    assert attempts["n"] == 1
+    assert result.status == "failed"
+    assert "planner unavailable" in " ".join(s.summary for s in trace.steps)
 
 
 def test_retry_budget_is_respected(trace):

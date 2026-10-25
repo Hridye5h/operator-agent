@@ -389,3 +389,110 @@ def test_framework_code_names_no_task(module):
     source = (ROOT / module).read_text(encoding="utf-8")
     hits = sorted(set(TASK_NAMES.findall(source)))
     assert hits == [], f"{module} is coupled to a task: {hits}"
+
+
+# --------------------------------------------------------------------------
+# A contest belongs to its record, and the human's choice is binding
+# --------------------------------------------------------------------------
+
+def two_invoice_registry(written, answer="x"):
+    """GX-9 states two totals; NW-1 is clean. Read by file."""
+    docs = {"gx": CONTESTED_READ, "nw": CLEAN_READ}
+    reg = ToolRegistry()
+    reg.tool("read_invoice", "r", props("file"), kind="read")(
+        lambda file="", **k: ToolResult(True, data=docs[file],
+                                        display="CONTESTED (amount)" if file == "gx" else "ok"))
+    reg.tool("submit_payable", "w", props("vendor", "invoice_number", "amount", "due_date"),
+             kind="write")(
+        lambda **k: (written.append(k), ToolResult(True, data={"record_id": "1"}))[1])
+    reg.tool("verify_payable", "v",
+             props("invoice_number", "expect_vendor", "expect_amount", "expect_due_date"),
+             kind="verify")(lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"))
+    reg.tool("ask_human", "a", props("question", "options"), kind="ask")(
+        lambda **k: ToolResult(True, data={"answer": answer}))
+    return reg
+
+
+GUESS = {"vendor": "Globex", "invoice_number": "GX-9", "amount": "118590.00",
+         "due_date": "2026-09-10"}
+
+
+def test_reading_another_document_does_not_clear_a_contest(trace):
+    written = []
+    planner = SequencePlanner([Decision("read_invoice", {"file": "gx"}),
+                               Decision("read_invoice", {"file": "nw"}),
+                               Decision("submit_payable", GUESS, "", 0.9)])
+
+    result = run(Agent(planner, two_invoice_registry(written), AgentConfig(max_steps=8)),
+                 "record it", trace)
+
+    assert written == []
+    assert not result.ok
+
+
+def test_a_clean_record_can_be_written_while_another_is_contested(trace):
+    written = []
+    planner = SequencePlanner([Decision("read_invoice", {"file": "gx"}),
+                               Decision("read_invoice", {"file": "nw"}),
+                               Decision("submit_payable", {"use_extracted": True}),
+                               Decision("verify_payable", {}),
+                               Decision("finish", {})])
+
+    result = run(Agent(planner, two_invoice_registry(written), AgentConfig(max_steps=8)),
+                 "record it", trace)
+
+    assert [w["invoice_number"] for w in written] == ["NW-1"]
+    assert result.ok
+
+
+def test_the_write_must_carry_the_value_the_human_chose(trace):
+    written = []
+    planner = SequencePlanner([Decision("read_invoice", {"file": "gx"}),
+                               Decision("ask_human", {"question": "which amount?"}),
+                               Decision("submit_payable", GUESS, "", 0.9)])
+    reg = two_invoice_registry(written, answer="use the amended total")
+
+    result = run(Agent(planner, reg, AgentConfig(max_steps=8)), "record it", trace)
+
+    assert written == []
+    assert result.status == "escalated"
+
+
+def test_the_human_choice_survives_reading_the_document_again(trace):
+    written = []
+    planner = SequencePlanner([Decision("read_invoice", {"file": "gx"}),
+                               Decision("ask_human", {"question": "which amount?"}),
+                               Decision("read_invoice", {"file": "gx"}),
+                               Decision("submit_payable", {"use_extracted": True}),
+                               Decision("verify_payable", {}),
+                               Decision("finish", {})])
+    reg = two_invoice_registry(written, answer="use the amended total")
+
+    result = run(Agent(planner, reg, AgentConfig(max_steps=8)), "record it", trace)
+
+    assert [w["amount"] for w in written] == ["96400.00"]
+    assert result.ok
+
+
+# --------------------------------------------------------------------------
+# A verification must name a record and compare something
+# --------------------------------------------------------------------------
+
+def test_verifying_without_a_key_never_reaches_the_system(monkeypatch):
+    from tools import browser
+
+    monkeypatch.setattr(browser.httpx, "get", lambda *a, **k: pytest.fail("queried"))
+    result = browser._verify("/api/payables", "invoice_number", "",
+                             {"amount": "10.00"}, describe=str)
+    assert not result.ok and not result.retriable
+    assert "without the record's invoice_number" in result.error
+
+
+def test_verifying_with_nothing_to_compare_is_not_a_verification(monkeypatch):
+    from tools import browser
+
+    monkeypatch.setattr(browser.httpx, "get", lambda *a, **k: pytest.fail("queried"))
+    result = browser._verify("/api/payables", "invoice_number", "NW-1",
+                             {"vendor": "", "amount": None}, describe=str)
+    assert not result.ok
+    assert "nothing to compare" in result.error

@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from agent.core import Agent, AgentConfig, _resolve_amount  # noqa: E402
+from agent.core import Agent, AgentConfig, _is_approval, _resolve_amount  # noqa: E402
 from agent.llm import Decision  # noqa: E402
 from agent.tools import ToolRegistry, ToolResult  # noqa: E402
 from agent.trace import Trace  # noqa: E402
@@ -658,3 +658,37 @@ def test_a_corrected_write_supersedes_the_earlier_one(trace):
 
     assert result.status == "completed"
     assert checks[0]["expect_amount"] == "12.00"
+
+
+# -- only a clear yes approves ------------------------------------------------
+
+@pytest.mark.parametrize("answer,approved", [
+    ("approve", True), ("Approved.", True), ("yes", True), ("Y", True), ("ok", True),
+    ("okay, go ahead", True),
+    ("you decide", False), ("yesterday's figure was wrong, hold it", False),
+    ("approve but not above 50,000", False), ("yes, but do not submit yet", False),
+    ("no", False), ("decline", False), ("", False), ("okay no", False),
+    ("yes please", True), ("confirm with finance first", False),
+    ("ok, but check with finance", False), ("yes, only if it is under budget", False),
+    ("approve after Friday", False), ("yes I don't mind", False),
+])
+def test_only_a_clear_yes_is_an_approval(answer, approved):
+    assert _is_approval(answer) is approved
+
+
+def test_an_unclear_reply_does_not_release_a_gated_write(trace):
+    written = []
+    reg = make_registry(
+        ask_human=lambda **k: ToolResult(True, data={"answer": "you decide"}),
+        submit_payable=lambda **k: (written.append(k),
+                                    ToolResult(True, data={"record_id": "1"}))[1],
+        verify_payable=lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"),
+    )
+    planner = SequencePlanner([Decision("submit_payable", {"amount": "126500.00"})])
+    agent = Agent(planner, reg,
+                  AgentConfig(max_steps=5, approval_policy=over_limit(100000)))
+
+    result = agent.run("record it", trace)
+
+    assert written == []
+    assert result.status == "escalated"
