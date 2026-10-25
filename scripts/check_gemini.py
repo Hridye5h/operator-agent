@@ -51,6 +51,8 @@ def main() -> int:
 
     print(f"model selected   : {planner.name.split(':', 1)[1]}"
           f"{'  (from GEMINI_MODEL)' if os.environ.get('GEMINI_MODEL') else ''}")
+    if len(planner.models) > 1:
+        print(f"fallback order   : {' -> '.join(planner.models)}")
 
     system = ("Reply with exactly one JSON object choosing the next action: "
               '{"action": "...", "args": {...}, "reasoning": "...", "confidence": 0.0-1.0}')
@@ -67,6 +69,9 @@ def main() -> int:
     ok = isinstance(decision, Decision) and decision.action == "finish"
     print(f"planning call    : {'OK' if ok else 'unexpected'} in {elapsed:.1f}s "
           f"-> action={decision.action!r}")
+    if planner.switches:
+        print(f"answered by      : {planner.name.split(':', 1)[1]} "
+              f"(after {', '.join(old for old, _ in planner.switches)} could not)")
     if planner.waits:
         print(f"rate-limit waits : {len(planner.waits)} ({sum(w for _, w in planner.waits):.0f}s)")
     print("\nReady. Try:  python run_agent.py --scenario happy --planner gemini")
