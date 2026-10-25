@@ -527,3 +527,13 @@ planner, and a model can be steered by text inside the documents it reads.
 evil.example, and the page text the tool returns would go wherever that host
 wanted. Paths must now start with a single `/`, the resulting URL must be on the
 internal system, and a navigation that ends up anywhere else is refused.
+
+---
+
+### 35. A figure that does not parse cleanly is missing, not approximated
+
+The money pattern took at most two decimals and stopped, so "73,219.005" was
+read as 73,219.00 without a word. And a date the calendar does not have, such as
+2026-13-45, was passed through as if it were one. Both now come back as missing
+fields, which the agent reports instead of writing: a parser that fails loudly
+is the reason extraction is not done by a model in the first place.

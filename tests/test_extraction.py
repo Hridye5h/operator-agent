@@ -126,3 +126,28 @@ def test_the_forms_own_account_line_is_not_a_change(monkeypatch):
 
     monkeypatch.setattr(vendor_forms, "_text", lambda path: FORM)
     assert "contested" not in vendor_forms.parse_vendor_form(pathlib.Path("orbit.pdf"))
+
+
+def _invoice(monkeypatch, body):
+    from tools import files
+
+    monkeypatch.setattr(files, "_text", lambda path: "NORTHWIND TRADERS\n" + body)
+    return files.parse_invoice(pathlib.Path("northwind_x.pdf"))
+
+
+def test_an_amount_with_more_precision_is_not_truncated(monkeypatch):
+    parsed = _invoice(monkeypatch, "Invoice Number: NW-1\nInvoice Date: 2026-01-01\n"
+                                   "Due Date: 2026-02-01\nTotal Amount Due: INR 73,219.005\n")
+    assert parsed.amount is None and "amount" in parsed.missing
+
+
+def test_an_amount_at_the_end_of_a_sentence_is_read(monkeypatch):
+    parsed = _invoice(monkeypatch, "Invoice Number: NW-1\nInvoice Date: 2026-01-01\n"
+                                   "Due Date: 2026-02-01\nTotal Amount Due: INR 73,219.00.\n")
+    assert parsed.amount == 73219.0
+
+
+def test_an_impossible_date_is_reported_missing(monkeypatch):
+    parsed = _invoice(monkeypatch, "Invoice Number: NW-1\nInvoice Date: 2026-01-01\n"
+                                   "Due Date: 2026-13-45\nTotal Amount Due: INR 10.00\n")
+    assert parsed.due_date is None and "due_date" in parsed.missing

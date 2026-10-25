@@ -24,7 +24,10 @@ from agent.tools import ToolResult
 
 INVOICE_DIR = pathlib.Path(__file__).resolve().parents[1] / "mockenv" / "invoices"
 
-_MONEY = r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)"
+# Not followed by another digit, or by a separator and a digit: "73,219.005" is
+# not read as 73,219.00. A figure that does not parse cleanly is reported
+# missing rather than read as a plausible neighbour.
+_MONEY = r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?![0-9]|[.,][0-9])"
 
 NUMBER_LABELS = [r"Invoice Number", r"Reference", r"Document"]
 ISSUED_LABELS = [r"Invoice Date", r"Raised on", r"Dated"]
@@ -188,7 +191,7 @@ def _normalise_date(value: str | None) -> str | None:
     try:
         return dt.date.fromisoformat(value).isoformat()
     except ValueError:
-        return value
+        return None                         # "2026-13-45" is reported missing, not passed on
 
 
 # --------------------------------------------------------------------------
