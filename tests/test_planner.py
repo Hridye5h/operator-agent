@@ -564,3 +564,14 @@ def test_a_server_already_on_the_port_is_refused(monkeypatch):
             run_agent.start_environment()
     finally:
         listener.close()
+
+
+@pytest.mark.parametrize("amount,gated", [
+    ("99999.99", False), ("100000.01", True), ("-500000", True),
+    ("nan", True), ("NaN", True), ("inf", True), ("", True), ("INR 5,000", True),
+])
+def test_the_value_policy_fails_closed(amount, gated):
+    from run_agent import value_threshold_policy
+
+    policy = value_threshold_policy(100000)
+    assert (policy("submit_payable", {"amount": amount}) is not None) is gated

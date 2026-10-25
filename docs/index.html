@@ -132,13 +132,15 @@ const ALL_RUNS = [
 let RUNS = ALL_RUNS;
 
 const $ = id => document.getElementById(id);
-const esc = s => String(s??"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const esc = s => String(s??"").replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const asset = (id, name) => `demo/runs/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(name)}`;
 
 function renderTabs(active){
   const groups = [...new Set(RUNS.map(r => r.group))];
   $("tabs").innerHTML = groups.map(g =>
     `<div class="group">${esc(g)}</div>` + RUNS.filter(r => r.group === g).map(r =>
-    `<button role="tab" data-id="${r.id}" aria-selected="${r.id===active}">
+    `<button role="tab" data-id="${esc(r.id)}" aria-selected="${r.id===active}">
        <b>${esc(r.name)}</b><span>${esc(r.blurb)}</span></button>`).join("")).join("");
   $("tabs").querySelectorAll("button").forEach(b =>
     b.onclick = () => load(b.dataset.id));
@@ -183,7 +185,7 @@ async function load(id){
 
   const video = t.steps.flatMap(s => s.artifacts || []).find(a => a.endsWith(".webm"));
   $("video").innerHTML = video
-    ? `<video controls preload="metadata" src="demo/runs/${id}/artifacts/${esc(video)}"></video>
+    ? `<video controls preload="metadata" src="${esc(asset(id, video))}"></video>
        <div class="meta">The agent's browser, recorded during this run.</div>`
     : "";
 
@@ -191,7 +193,7 @@ async function load(id){
     const failed = s.detail && s.detail.ok === false;
     const mono = s.kind === "tool_call" || s.kind === "observation";
     const shots = (s.artifacts || []).filter(a => !a.endsWith(".webm")).map(a => {
-      const src = `demo/runs/${id}/artifacts/${a}`;
+      const src = esc(asset(id, a));
       return `<a href="${src}" target="_blank" rel="noopener">
                 <img src="${src}" alt="${esc(a)}" loading="lazy"><span>${esc(a)}</span></a>`;
     }).join("");

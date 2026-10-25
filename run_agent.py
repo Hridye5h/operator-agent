@@ -12,6 +12,7 @@ which procedure applies; nothing here is specific to a single task.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import pathlib
 import socket
@@ -69,7 +70,10 @@ def value_threshold_policy(limit: float):
             value = float(str(args.get("amount", "")).replace(",", ""))
         except ValueError:
             return "amount could not be read, so the value limit cannot be checked"
-        if value > limit:
+        # float() accepts "nan", which compares false against any limit.
+        if not math.isfinite(value):
+            return f"amount {value} is not a number, so the value limit cannot be checked"
+        if abs(value) > limit:
             return f"amount {value:,.2f} exceeds the {limit:,.0f} auto-approval limit"
         return None
 

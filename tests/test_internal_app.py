@@ -74,3 +74,10 @@ def test_verification_endpoint_reflects_what_was_stored(client):
     assert rec["vendor"] == "Northwind Traders"
     assert rec["amount"] == pytest.approx(73219.00)
     assert rec["due_date"] == "2026-07-22"
+
+
+@pytest.mark.parametrize("due_date", ["2026-13-45", "2026-02-30", "0000-00-00"])
+def test_an_impossible_date_is_rejected(client, due_date):
+    client.post("/new", data=GOOD)              # absorb transient
+    r = client.post("/new", data={**GOOD, "due_date": due_date})
+    assert r.status_code == 400 and "VAL-004" in r.text

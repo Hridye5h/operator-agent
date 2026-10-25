@@ -43,6 +43,14 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 PAN_RE = re.compile(r"^[A-Z]{5}\d{4}[A-Z]$")
 IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
+
+
+def _real_date(value: str) -> bool:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
 ACCOUNT_RE = re.compile(r"^\d{9,18}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -163,7 +171,7 @@ def create(
             "VAL-003: Amount must be a plain decimal with no currency symbol, "
             "no commas and no spaces (example: 73219.00)."
         )
-    if not DATE_RE.match(due_date.strip()):
+    if not DATE_RE.match(due_date.strip()) or not _real_date(due_date.strip()):
         return reject("VAL-004: Due date must be in YYYY-MM-DD format.")
 
     value = float(amount)
