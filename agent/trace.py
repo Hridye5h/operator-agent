@@ -8,6 +8,7 @@ trace is also what the final report cites as evidence.
 from __future__ import annotations
 
 import json
+import sys
 import pathlib
 import time
 import uuid
@@ -87,7 +88,13 @@ class Trace:
         line = f"[{step.index:02d}] {tag:<5} {step.summary}"
         if step.elapsed_ms is not None:
             line += f"  ({step.elapsed_ms} ms)"
-        print(line, flush=True)
+        # The echo is a convenience; a model's "₹" on a cp1252 console must not
+        # take the run down with it. trace.json is always UTF-8.
+        try:
+            print(line, flush=True)
+        except UnicodeEncodeError:
+            enc = getattr(sys.stdout, "encoding", None) or "ascii"
+            print(line.encode(enc, "replace").decode(enc), flush=True)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -101,9 +108,12 @@ class Trace:
         }
 
     def _flush(self) -> None:
-        (self.dir / "trace.json").write_text(
-            json.dumps(self.as_dict(), indent=2, default=str), encoding="utf-8"
-        )
+        # Written whole and swapped in, so a run killed mid-write leaves the
+        # previous complete trace rather than a truncated one.
+        path = self.dir / "trace.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.as_dict(), indent=2, default=str), encoding="utf-8")
+        tmp.replace(path)
 
     def write_markdown(self) -> pathlib.Path:
         """Human-readable run report, suitable for pasting into a PR or ticket."""
@@ -121,7 +131,7 @@ class Trace:
             "|---|------|---------------|",
         ]
         for s in d["steps"]:
-            summary = str(s["summary"]).replace("|", "\\|")
+            summary = str(s["summary"]).replace("|", "\\|").replace("\n", "<br>")
             out.append(f"| {s['index']} | `{s['kind']}` | {summary} |")
 
         arts = sorted(p.name for p in self.artifacts_dir.glob("*"))

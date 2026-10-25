@@ -324,6 +324,10 @@ def build_registry(session: browser_tools.BrowserSession,
 
 
 def main() -> int:
+    # Model text reaches the console; an unencodable character is not worth a crash.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(description="Autonomous task operator")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="happy")
     ap.add_argument("--goal", help="override the scenario's goal")

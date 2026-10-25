@@ -290,7 +290,7 @@ survive extraction, the form, the database and verification as a string.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 214 tests, a few seconds
+python -m pytest tests/ -q                # 217 tests, a few seconds
 python -m pytest tests/ -m integration    # + 8 runs against the real app and browser (~2 min)
 ```
 
