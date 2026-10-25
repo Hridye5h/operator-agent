@@ -71,6 +71,11 @@ summarising and continuing.
 - Choosing the document from the request is word-overlap scoring. Good enough
   to pick "the latest Northwind invoice", not to understand "the one Priya sent
   last week". A tie with no recency word asks rather than guesses.
+- Document text reaches the model, so a document can try to instruct it. The
+  guarantees do not depend on the model behaving — writes must match a
+  document, contested values need a person, approvals need a plain yes, the
+  browser cannot leave the internal system — but a misled model can still waste
+  turns or escalate when it need not.
 - Screenshots are full-page PNGs with no redaction. Real deployment would need
   masking before anything is persisted.
 - The SQLite ledger is wiped per run by default (`--scenario` resets it), so
