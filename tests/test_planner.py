@@ -6,6 +6,7 @@ response shapes it has to survive, and how the agent reacts when a reply cannot
 be used.
 """
 
+import json
 import pathlib
 import sys
 import types as pytypes
@@ -575,3 +576,28 @@ def test_the_value_policy_fails_closed(amount, gated):
 
     policy = value_threshold_policy(100000)
     assert (policy("submit_payable", {"amount": amount}) is not None) is gated
+
+
+@pytest.mark.parametrize("conf,expected", [
+    (None, 1.0), ("0.3", 0.3), (5, 1.0), (-1, 0.0), (0.25, 0.25),
+])
+def test_confidence_is_read_leniently_and_clamped(conf, expected):
+    raw = '{"action":"finish","args":{}' + ("" if conf is None else f',"confidence":{json.dumps(conf)}') + "}"
+    assert Decision.parse(raw).confidence == expected
+
+
+@pytest.mark.parametrize("conf", ['"high"', '"nan"', '[0.5]', '{"v":1}'])
+def test_an_unreadable_confidence_is_a_bad_answer_not_a_dead_planner(conf):
+    with pytest.raises(UnusableReply, match="confidence"):
+        Decision.parse('{"action":"finish","args":{},"confidence":' + conf + "}")
+
+
+def test_a_wordy_confidence_is_re_prompted_not_fatal(trace):
+    replies = iter([response('{"action":"verify_payable","args":{},"confidence":"high"}'),
+                    response('{"action":"verify_payable","args":{},"confidence":0.9}'),
+                    response('{"action":"finish","args":{}}')])
+    planner = GeminiPlanner(client=StubClient(lambda _c: next(replies)), model="m")
+
+    result = Agent(planner, registry_with_verify(), AgentConfig(max_steps=5)).run("x", trace)
+
+    assert result.status == "completed"

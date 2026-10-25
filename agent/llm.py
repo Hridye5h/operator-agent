@@ -16,6 +16,7 @@ step it takes is decided at runtime from what it has observed.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -52,11 +53,21 @@ class Decision:
         args = blob.get("args") or blob.get("arguments") or {}
         if not isinstance(args, dict):
             args = {}
+        # A confidence the agent cannot read must not count as confident, and it
+        # must not end the run either: it is a bad answer, so ask again.
+        raw_conf = blob.get("confidence")
+        try:
+            confidence = 1.0 if raw_conf is None else float(raw_conf)
+        except (TypeError, ValueError):
+            raise UnusableReply(f"confidence must be a number from 0 to 1, "
+                                f"got {raw_conf!r}") from None
+        if not math.isfinite(confidence):
+            raise UnusableReply(f"confidence must be a number from 0 to 1, got {raw_conf!r}")
         return Decision(
             action=str(action),
             args=args,
             reasoning=str(blob.get("reasoning", "")),
-            confidence=float(blob.get("confidence", 1.0)),
+            confidence=min(max(confidence, 0.0), 1.0),
         )
 
 
