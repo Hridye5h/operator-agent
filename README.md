@@ -252,10 +252,12 @@ The framework is held to that by a test rather than a promise.
 the procedure loader for any tool, field or vendor name, and fails if one
 appears.
 
-**What this does not yet prove:** both procedures share the
-discover → read → write → verify shape. A task of a different shape — say,
-reconciling two systems, or a multi-record batch — would run on the LLM planner
-unchanged, but the deterministic planner only executes that one shape.
+**Beyond one shape:** both procedures share the discover → read → write →
+verify shape, and the deterministic planner executes only that. The `batch`
+scenario is a different shape — several records in one run — and needs the LLM
+planner; the loop holds the run open until every record written has been read
+back, each against its own values. A task such as reconciling two systems would
+run the same way.
 
 ---
 
