@@ -301,6 +301,7 @@ python -m pytest tests/ -m integration    # + 8 runs against the real app and br
 | `test_extraction.py` | All six invoices against ground truth, the columnar-layout regression, ambiguity reported not resolved |
 | `test_planner.py` | Parsing what a model actually sends (fenced, prose-wrapped, truncated, blocked), the Gemini request shape, how the agent re-prompts an unusable reply, rate-limit waits and the per-model quota fallback |
 | `test_internal_app.py` | The environment's failure modes behave as specified |
+| `test_trace.py` | The run record survives what a model writes: characters the console cannot print, multi-line steps, a run killed mid-write |
 | `test_integration_browser.py` | Label-based form filling and result reading against the real app; leading zeros through the whole stack; the fraud pattern with and without a person to ask (marked `integration`) |
 | `test_integration_llm.py` | A full run driven by LLM-shaped replies against the real browser, server and verification read-back (marked `integration`) |
 

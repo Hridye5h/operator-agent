@@ -506,3 +506,13 @@ A `TypeError` raised inside a tool used to be reported as "bad arguments",
 which sent the planner off rewording a call that was fine. Arguments are now
 checked against the signature before the call, so only a real argument problem
 is reported as one.
+
+---
+
+### 33. The console must not be able to end a run
+
+On a Windows console, Python writes cp1252. A model whose reasoning contained a
+rupee sign raised `UnicodeEncodeError` inside the trace's console echo, and since
+every step is echoed, the run died mid-step — under the demo recorder too, whose
+captured output uses the same encoding. The echo now replaces what it cannot
+encode, the runner's own output does the same, and `trace.json` is always UTF-8.
