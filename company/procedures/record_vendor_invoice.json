@@ -2,6 +2,9 @@
   "name": "record_vendor_invoice",
   "purpose": "Record a supplier's invoice as a payable in Accounts Payable.",
   "triggers": ["invoice", "payable", "accounts payable"],
+  "actions": ["record", "enter", "book", "log", "add", "capture", "post"],
+  "not_for": ["cancel", "void", "delete", "remove", "reverse", "undo", "refund",
+             "reject", "update", "change", "edit", "modify", "correct", "whether"],
   "steps": {
     "discover": "list_invoices",
     "read": "read_invoice",

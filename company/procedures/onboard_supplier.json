@@ -2,6 +2,9 @@
   "name": "onboard_supplier",
   "purpose": "Register a new supplier in the Vendor Master from their signed registration form.",
   "triggers": ["vendor", "supplier", "onboard", "vendor master"],
+  "actions": ["onboard", "register", "add", "create", "set up", "enrol", "enroll"],
+  "not_for": ["deactivate", "offboard", "remove", "delete", "suspend", "block",
+             "cancel", "update", "change", "edit", "modify", "whether"],
   "steps": {
     "discover": "list_vendor_forms",
     "read": "read_vendor_form",

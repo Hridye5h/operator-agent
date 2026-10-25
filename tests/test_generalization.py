@@ -638,3 +638,18 @@ def test_paths_on_the_internal_system_are_allowed(path):
     from tools import browser
 
     assert browser._on_this_system(f"{browser.BASE_URL}{path}")
+
+
+@pytest.mark.parametrize("goal", [
+    "Cancel the Northwind Traders payable NW-2026-0671.",
+    "Change the due date on the Northwind payable to 2026-08-01.",
+    "Check whether the Northwind invoice was recorded as a payable.",
+    "Look at the Globex invoices.",
+    "Deactivate the supplier Orbit Logistics in the Vendor Master.",
+    "Update Orbit Logistics' bank account in the Vendor Master.",
+])
+def test_a_request_for_a_different_action_selects_no_procedure(goal):
+    """Regression: 'cancel the Northwind payable' selected the procedure that
+    records one, and the deterministic planner recorded it and reported success."""
+    procs = load_procedures(ROOT / "company" / "procedures")
+    assert select_procedure(goal, procs) is None

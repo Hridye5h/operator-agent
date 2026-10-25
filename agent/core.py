@@ -64,6 +64,8 @@ Rules you must follow:
 assumption.
 - Follow the company procedure when one is given; it is how this organisation \
 does this work.
+- Do only what the goal asks. If no tool can do it (cancelling, when you can only \
+create), ask a human; never substitute a different action.
 - Never invent a value you have not read. If a required value is missing or the \
 source contradicts itself, call ask_human instead of choosing. Writes that touch \
 a contested value are refused until a human resolves it.
