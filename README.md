@@ -128,7 +128,9 @@ executes it.
 
 **The browser finds fields the way a person does.** Fields are located by their
 visible label, buttons by their visible name, and outcomes by ARIA roles (`alert`
-for errors, `status` for confirmations). No element ids, so the same code
+for errors, `status` for confirmations). Each field is read back after typing, so
+a form that truncates or reformats a value is caught before anything is
+submitted. No element ids, so the same code
 operates any form a person could fill in.
 
 **It writes through the browser, reads through the API.** The mock system
@@ -284,8 +286,8 @@ survive extraction, the form, the database and verification as a string.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 185 tests, a few seconds
-python -m pytest tests/ -m integration    # + 7 runs against the real app and browser (~1 min)
+python -m pytest tests/ -q                # 196 tests, a few seconds
+python -m pytest tests/ -m integration    # + 8 runs against the real app and browser (~2 min)
 ```
 
 | File | Covers |

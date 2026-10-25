@@ -117,7 +117,16 @@ class BrowserSession:
                         False, retriable=False, error_kind="invalid", artifacts=shots,
                         error=f"form at {path} has {box.count()} fields labelled "
                               f"{label!r}; expected exactly one")
-                box.fill("" if value is None else str(value))
+                typed = "" if value is None else str(value)
+                box.fill(typed)
+                # A maxlength or a formatting script can change what was typed;
+                # submitting anyway would store a value nobody intended.
+                held = box.input_value()
+                if held != typed:
+                    return ToolResult(
+                        False, retriable=False, error_kind="invalid", artifacts=shots,
+                        error=f"the field labelled {label!r} holds {held!r} after "
+                              f"typing {typed!r}; not submitted")
             shot = self.screenshot(f"form-filled-{tag}")
             if shot:
                 shots.append(shot)

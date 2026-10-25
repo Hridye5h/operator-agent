@@ -477,3 +477,14 @@ says exactly what to write instead.
 without saying so, and `read_vendor_form(legal_name="Pvt Ltd")` returned the
 first of two matches by filename. Both now refuse and list the candidates;
 `latest=true`, a file name or an invoice number selects one.
+
+---
+
+### 31. A field is read back before the form is submitted
+
+`fill()` was trusted. A `maxlength` of 5 turned "NW-2026-0671" into "NW-20" and
+the form was submitted with it. Verification would have caught the mismatch,
+but only after a wrong record existed. Each field's value is now read back after
+typing, and the submission is abandoned if it differs. The test serves a form
+with a `maxlength` and asserts that nothing was posted; it fails on the old
+code.

@@ -81,9 +81,10 @@ summarising and continuing.
 ## What I would build next, in order
 
 **1. Model-grounded perception for unlabelled forms.** Label-based filling is
-done; the next step is a fallback for when labels fail: read the accessibility
-tree, ask the model to map intent to an element, act, then read the field back to
-confirm it holds what was typed. This is what turns "operates forms built for
+done, and every field is read back before submitting to confirm it holds what was
+typed. The next step is a fallback for when labels fail: read the accessibility
+tree, ask the model to map intent to an element, act, and read it back the same
+way. This is what turns "operates forms built for
 people" into "operates software". Everything below benefits from it.
 
 **2. Persistent company memory.** A store of what the agent learned — vendor

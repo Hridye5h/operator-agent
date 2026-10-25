@@ -141,3 +141,21 @@ def test_the_person_chooses_the_account_and_only_that_one_is_written(env):
     assert [v["bank_account"] for v in vendors()] == ["918020004561237"]
     check = next(s for s in trace.steps if s.kind == "verification")
     assert "bank_account" in check.detail["verified_fields"]
+
+
+def test_a_field_that_changes_what_was_typed_is_not_submitted(env):
+    """A maxlength truncates silently. The value is read back before submitting,
+    so the record is never created with a value nobody intended."""
+    _, bt, session, _ = env
+    submitted = []
+    form = ('<form method="post" action="/trap"><label for="n">Invoice number</label>'
+            '<input id="n" name="n" maxlength="5"><button>Save</button></form>')
+    session.page.route(f"{bt.BASE_URL}/trap", lambda route: (
+        submitted.append(route.request.method) if route.request.method == "POST" else None,
+        route.fulfill(status=200, content_type="text/html", body=form))[1])
+
+    result = session.submit_form("/trap", {"Invoice number": "NW-2026-0671"}, "Save", "trap")
+
+    assert not result.ok and not result.retriable
+    assert "'NW-20'" in result.error
+    assert submitted == []
