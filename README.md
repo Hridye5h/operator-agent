@@ -222,5 +222,7 @@ docs/             ARCHITECTURE.md · DECISIONS.md · LIMITATIONS.md
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design,
 [`docs/DECISIONS.md`](docs/DECISIONS.md) for the trade-offs and what was
-rejected, and [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for what this does
-not do and what would come next.
+rejected, [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for what this does not do,
+the assumptions it makes and what would come next, and
+[`docs/COMPONENTS.md`](docs/COMPONENTS.md) for every model, library and external
+service used.
