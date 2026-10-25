@@ -160,7 +160,9 @@ is caught here.
 **Failure is data, not an exception.** Tools never raise into the loop; they
 return a `ToolResult` carrying `ok`, an error message, and `retriable`. The
 agent uses that flag to decide between retrying unchanged and changing approach
-— retrying a validation rejection unchanged would just fail again.
+— retrying a validation rejection unchanged would just fail again. A write that
+crashes partway is reported as *outcome unknown*, not retriable: it may have
+landed, so it counts as unverified until the record has been read back.
 
 **Extraction is deterministic; planning is not.** A language model is the right
 tool for deciding what to do next. It is the wrong tool for reading a number off
@@ -288,7 +290,7 @@ survive extraction, the form, the database and verification as a string.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 196 tests, a few seconds
+python -m pytest tests/ -q                # 204 tests, a few seconds
 python -m pytest tests/ -m integration    # + 8 runs against the real app and browser (~2 min)
 ```
 

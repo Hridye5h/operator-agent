@@ -488,3 +488,21 @@ but only after a wrong record existed. Each field's value is now read back after
 typing, and the submission is abandoned if it differs. The test serves a form
 with a `maxlength` and asserts that nothing was posted; it fails on the old
 code.
+
+---
+
+### 32. A write that crashes has an unknown outcome
+
+A tool that raised was reported as retriable, whatever it was. For a write that
+is the wrong default: the browser may have submitted the form before something
+else failed, and a write repeated blind can enter the record twice. A crashed
+write is now reported as *outcome unknown*, not retriable, and joins the list of
+writes that must be read back before the run can finish. If the record is there,
+verification passes; if not, the planner has to write it again. Reads and
+verifications that crash are still retriable, since repeating them changes
+nothing.
+
+A `TypeError` raised inside a tool used to be reported as "bad arguments",
+which sent the planner off rewording a call that was fine. Arguments are now
+checked against the signature before the call, so only a real argument problem
+is reported as one.

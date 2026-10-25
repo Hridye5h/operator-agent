@@ -72,7 +72,8 @@ rather than copying them.
 - If a tool fails and the error is marked retriable, retrying the same call is \
 reasonable. A conflict means the target already exists: confirm it rather than \
 creating it again. If an error is permanent, change the arguments or the \
-approach — repeating it unchanged will fail again.
+approach — repeating it unchanged will fail again. If a write's outcome is \
+unknown, read the record back before doing anything else.
 - Before finishing you MUST verify every record you wrote by reading it back \
 from the system of record. Do not treat a success page as proof.
 - Set confidence below 0.4 when you are unsure; low confidence will route the \
@@ -318,6 +319,10 @@ class Agent:
                     trace.add("verification", result.brief(240), **evidence, **coverage)
             else:
                 last_error = result.error
+                if kind == "write" and result.error_kind == "unknown":
+                    # It may have landed; the run cannot finish until it is checked.
+                    writes.append({"tool": decision.action, "args": dict(args),
+                                   "verified": False})
                 if self._is_verification(decision.action):
                     verified = False
                     trace.add("verification", f"FAILED: {result.error}")

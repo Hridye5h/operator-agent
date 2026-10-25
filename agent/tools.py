@@ -57,6 +57,8 @@ class ToolResult:
     * ``transient`` - worth retrying unchanged
     * ``conflict``  - the target already exists; the work may already be done
     * ``invalid``   - the input was rejected; retrying unchanged cannot help
+    * ``unknown``   - a write failed partway; it may have taken effect, so the
+                      record must be read back before anything is repeated
     """
 
     ok: bool
@@ -70,8 +72,8 @@ class ToolResult:
     def brief(self, limit: int = 600) -> str:
         """Short rendering for the planner's observation buffer."""
         if not self.ok:
-            if self.error_kind == "conflict":
-                tag = "conflict"
+            if self.error_kind in ("conflict", "unknown"):
+                tag = "conflict" if self.error_kind == "conflict" else "outcome unknown"
             else:
                 tag = "retriable" if self.retriable else "permanent"
             return f"ERROR ({tag}): {self.error}"
@@ -179,13 +181,26 @@ class ToolRegistry:
             accepted = {k: v for k, v in args.items() if k in sig.parameters}
             rejected = sorted(set(args) - set(accepted))
 
+        try:
+            sig.bind(**accepted)
+        except TypeError as exc:
+            return ToolResult(False, error=f"bad arguments for {name}: {exc}",
+                              error_kind="invalid"), 0
+
         started = time.perf_counter()
         try:
             result = tool.fn(**accepted)
-        except TypeError as exc:
-            result = ToolResult(False, error=f"bad arguments for {name}: {exc}")
         except Exception as exc:  # a tool crash is an observation, not a stack trace
-            result = ToolResult(False, error=f"{type(exc).__name__}: {exc}", retriable=True)
+            if tool.kind == "write":
+                # It may have failed after the submission went through, and a
+                # write repeated blind can enter the same record twice.
+                result = ToolResult(
+                    False, retriable=False, error_kind="unknown",
+                    error=f"{type(exc).__name__}: {exc}. The write may or may not have "
+                          f"taken effect; read the record back before trying again.")
+            else:
+                result = ToolResult(False, error=f"{type(exc).__name__}: {exc}",
+                                    retriable=True, error_kind="transient")
         elapsed = int((time.perf_counter() - started) * 1000)
 
         if rejected and result.ok:

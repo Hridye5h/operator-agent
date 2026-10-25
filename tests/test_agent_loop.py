@@ -692,3 +692,75 @@ def test_an_unclear_reply_does_not_release_a_gated_write(trace):
 
     assert written == []
     assert result.status == "escalated"
+
+
+# -- a crashed write is not retried blind --------------------------------------
+
+def test_a_write_that_crashes_is_reported_as_outcome_unknown():
+    reg = ToolRegistry()
+
+    def submit_payable(**k):
+        raise RuntimeError("screenshot failed after submit")
+
+    reg.tool("submit_payable", "w", SCHEMAS["submit_payable"], kind="write")(submit_payable)
+    result, _ = reg.invoke("submit_payable", {"amount": "10.00"})
+
+    assert not result.ok and not result.retriable
+    assert result.error_kind == "unknown"
+    assert "read the record back" in result.error
+    assert result.brief().startswith("ERROR (outcome unknown)")
+
+
+def test_a_read_that_crashes_may_be_retried():
+    reg = ToolRegistry()
+    reg.tool("read_invoice", "r", SCHEMAS["read_invoice"], kind="read")(
+        lambda **k: 1 / 0)
+    result, _ = reg.invoke("read_invoice", {})
+    assert result.retriable and result.error_kind == "transient"
+
+
+def test_a_bug_inside_a_tool_is_not_reported_as_bad_arguments():
+    reg = ToolRegistry()
+
+    def read_invoice(file=""):
+        return len(None)                      # TypeError from the tool's own code
+
+    reg.tool("read_invoice", "r", SCHEMAS["read_invoice"], kind="read")(read_invoice)
+    result, _ = reg.invoke("read_invoice", {"file": "x"})
+    assert "bad arguments" not in result.error
+    assert "TypeError" in result.error
+
+
+def crashing_after_submit(landed):
+    """An AP stub whose write raises after (or before) the record is stored."""
+    reg, stored, checks = recording_payables()
+
+    def submit_payable(**k):
+        if landed:
+            stored[k["invoice_number"]] = dict(k)
+        raise RuntimeError("browser closed after submit")
+
+    verify = reg.get("verify_payable").fn
+    return make_registry(submit_payable=submit_payable, verify_payable=verify), checks
+
+
+def test_a_crashed_write_must_be_read_back_before_finishing(trace):
+    reg, checks = crashing_after_submit(landed=True)
+    planner = SequencePlanner([write("A-1", "10.00"), Decision("finish", {}),
+                               Decision("verify_payable", {}), Decision("finish", {})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=6)).run("record A", trace)
+
+    assert any("not yet read back" in c for c in planner.seen_contexts)
+    assert result.status == "completed" and result.verified
+    assert checks[0]["invoice_number"] == "A-1" and checks[0]["expect_amount"] == "10.00"
+
+
+def test_a_crashed_write_that_did_not_land_cannot_complete(trace):
+    reg, _ = crashing_after_submit(landed=False)
+    planner = SequencePlanner([write("A-1", "10.00"), Decision("verify_payable", {}),
+                               Decision("finish", {})])
+
+    result = Agent(planner, reg, AgentConfig(max_steps=5)).run("record A", trace)
+
+    assert result.status == "exhausted" and not result.verified
