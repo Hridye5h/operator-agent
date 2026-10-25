@@ -221,6 +221,7 @@ testable and demonstrable without a network call. To use the real planner:
 ```bash
 cp .env.example .env                  # add GEMINI_API_KEY (aistudio.google.com/apikey)
 python scripts/check_gemini.py        # preflight: key, available models, one test call
+python scripts/check_gemini.py --no-call   # the same, without spending any quota
 python run_agent.py --scenario happy --planner gemini
 ```
 
@@ -236,7 +237,10 @@ switch. A model set with `GEMINI_MODEL` is never swapped.
 
 `python scripts/record_llm_demos.py` records model-driven runs, with video, into
 the run viewer. Runs are kept as they happened — a run that escalates or fails is
-recorded, not retried until it looks good.
+recorded, not retried until it looks good. A run in which the model never
+answered (a used-up quota, an outage) says nothing about the agent and is not
+published. On the free tier each model allows 20 requests in a rolling day, and
+a run uses roughly 8 to 14.
 
 ---
 

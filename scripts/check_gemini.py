@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Preflight for the live planner: is the key usable, and which model will run?
 
-    python scripts/check_gemini.py
+    python scripts/check_gemini.py              # key, models, and one planning call
+    python scripts/check_gemini.py --no-call    # key and models only: spends no quota
 
 Loads ``.env``, lists the models this key can call, picks one the same way the
-agent does, and makes a single tiny planning call. Never prints the key.
+agent does, and makes a single tiny planning call. On the free tier that call is
+one of the day's twenty for the model, so ``--no-call`` skips it. Never prints
+the key.
 """
 
 from __future__ import annotations
@@ -53,6 +56,9 @@ def main() -> int:
           f"{'  (from GEMINI_MODEL)' if os.environ.get('GEMINI_MODEL') else ''}")
     if len(planner.models) > 1:
         print(f"fallback order   : {' -> '.join(planner.models)}")
+    if "--no-call" in sys.argv[1:]:
+        print("\nKey works. No planning call made (--no-call), so no quota was used.")
+        return 0
 
     system = ("Reply with exactly one JSON object choosing the next action: "
               '{"action": "...", "args": {...}, "reasoning": "...", "confidence": 0.0-1.0}')

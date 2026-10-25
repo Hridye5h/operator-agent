@@ -7,7 +7,9 @@
 Each scenario runs in its own process against a fresh environment, with the
 browser recorded. The trace, screenshots and video are copied to
 ``docs/demo/runs/llm-<scenario>/``. Runs are recorded as they happened: a run
-that fails or escalates is kept, not retried until it looks good.
+that fails or escalates is kept, not retried until it looks good. The one
+exception is a run where the model never answered — a used-up quota, an
+outage — which says nothing about the agent and is not published.
 """
 
 from __future__ import annotations
@@ -81,6 +83,18 @@ def main(argv: list[str]) -> int:
             rows.append((scenario, "no trace", "", ""))
             continue
 
+        trace = json.loads((run / "trace.json").read_text(encoding="utf-8"))
+
+        # The model never answered (a used-up quota, an outage): that says
+        # nothing about the agent, so it is not published and any earlier
+        # recording of this scenario is left in place.
+        unavailable = next((s["summary"] for s in trace["steps"] if s["kind"] == "error"
+                            and str(s["summary"]).startswith("planner unavailable")), None)
+        if unavailable:
+            rows.append((scenario, "not published", str(trace.get("step_count")),
+                         unavailable[:90]))
+            continue
+
         target = DEST / f"llm-{scenario}"
         if target.exists():
             shutil.rmtree(target)
@@ -90,7 +104,6 @@ def main(argv: list[str]) -> int:
             if art.suffix in (".png", ".webm"):
                 shutil.copy2(art, target / "artifacts" / art.name)
 
-        trace = json.loads((run / "trace.json").read_text(encoding="utf-8"))
         planner = " -> ".join(s["summary"].split(",")[0] for s in trace["steps"]
                               if s["kind"] == "plan" and s["summary"].startswith("planner="))
         rows.append((scenario, trace.get("outcome") or "incomplete",
