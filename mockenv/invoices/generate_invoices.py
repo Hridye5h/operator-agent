@@ -219,7 +219,7 @@ def main() -> None:
 
     (OUT / "MANIFEST.txt").write_text(
         "Ground truth for the mock invoice corpus (for grading the agent, not read by it)\n"
-        "=" * 78 + "\n" + "\n".join(manifest) + "\n",
+        + "=" * 78 + "\n" + "\n".join(manifest) + "\n",
         encoding="utf-8",
     )
     print(f"wrote {len(manifest)} invoices to {OUT}")
