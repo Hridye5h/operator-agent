@@ -13,9 +13,9 @@ target.
 
 **The deterministic planner covers one shape of task.** Both procedures are
 discover → read → write → verify, and the rule-based planner executes only that
-shape. A task with a different structure — reconciling two systems, processing a
-batch, a decision with branches — would need the LLM planner; the loop and its
-guarantees would not change.
+shape. A task with a different structure — processing a batch (the `batch`
+scenario), reconciling two systems, a decision with branches — needs the LLM
+planner; the loop and its guarantees do not change.
 
 **No desktop or OS-level control.** Browser and files only. No native
 applications.
@@ -29,7 +29,8 @@ across turns and gets revised; the agent re-decides from the observation buffer
 each turn. That is robust to surprise and weak at multi-stage tasks where an
 early choice constrains a later one.
 
-**No parallelism.** Strictly sequential. Ten invoices means ten serial runs.
+**No parallelism.** Strictly sequential. Ten invoices are ten write-and-verify
+cycles one after another, whether in one run or ten.
 
 **Memory is per-run.** Nothing is retained between runs — no record of how this
 company formats dates, which vendor amends invoices, or which forms are flaky.
@@ -74,7 +75,15 @@ summarising and continuing.
   masking before anything is persisted.
 - The SQLite ledger is wiped per run by default (`--scenario` resets it), so
   duplicate-detection across runs is only exercised in tests.
-- Browser startup dominates runtime (~2–3s of a ~7s run).
+- Provenance is exact. A written value must equal what the document says (a
+  money value may drop trailing zeros), so a planner that changes a name's case
+  or adds a thousands separator is refused and told the document's value. Strict
+  by choice; it costs a turn when a model paraphrases.
+- On Gemini's free tier a run takes one to three minutes, most of it waiting out
+  per-minute limits, and each model allowed 20 requests a day for this key —
+  about two runs. Unless a model is pinned, the planner moves to the next one
+  when a quota runs out or a model is overloaded.
+- Browser startup dominates a deterministic run (~2–3s of ~7s).
 
 ---
 
@@ -84,8 +93,8 @@ summarising and continuing.
 done, and every field is read back before submitting to confirm it holds what was
 typed. The next step is a fallback for when labels fail: read the accessibility
 tree, ask the model to map intent to an element, act, and read it back the same
-way. This is what turns "operates forms built for
-people" into "operates software". Everything below benefits from it.
+way. This is what turns "operates forms built for people" into "operates
+software". Everything below benefits from it.
 
 **2. Persistent company memory.** A store of what the agent learned — vendor
 quirks, form conventions, which fields that flaky system rejects — keyed by

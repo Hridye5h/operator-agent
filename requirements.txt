@@ -13,7 +13,7 @@ pypdf>=4.0
 reportlab>=4.0
 
 # Planner (optional — the agent falls back to a deterministic planner without a key)
-google-genai>=0.3
+google-genai>=2.33
 python-dotenv>=1.0
 
 # Tests
