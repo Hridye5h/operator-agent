@@ -43,7 +43,9 @@ Standard library only for everything else: `sqlite3` for the ledger, `json`,
 
 **None at runtime**, apart from the Gemini API when a key is configured.
 
-The agent reaches nothing outside `127.0.0.1:8099` and the local filesystem. No
+The agent reaches nothing outside `127.0.0.1:8099` and the local filesystem,
+and the browser tool enforces that: a path that would resolve to another host is
+refused, and so is a page that redirects off the system. No
 real company system, no third-party account, no credentials. The "internal
 system" is `mockenv/internal_app`, written for this project.
 

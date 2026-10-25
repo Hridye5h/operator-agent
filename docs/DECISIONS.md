@@ -516,3 +516,14 @@ rupee sign raised `UnicodeEncodeError` inside the trace's console echo, and sinc
 every step is echoed, the run died mid-step — under the demo recorder too, whose
 captured output uses the same encoding. The echo now replaces what it cannot
 encode, the runner's own output does the same, and `trace.json` is always UTF-8.
+
+---
+
+### 34. The browser cannot be sent off the internal system
+
+`open_page(path)` built its URL as `BASE_URL + path`. The path comes from the
+planner, and a model can be steered by text inside the documents it reads.
+`"@evil.example/x"` appended to `http://127.0.0.1:8099` is a URL whose host is
+evil.example, and the page text the tool returns would go wherever that host
+wanted. Paths must now start with a single `/`, the resulting URL must be on the
+internal system, and a navigation that ends up anywhere else is refused.

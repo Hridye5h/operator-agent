@@ -20,6 +20,7 @@ import pathlib
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from playwright.sync_api import TimeoutError as PWTimeout
@@ -28,6 +29,15 @@ from playwright.sync_api import sync_playwright
 from agent.tools import ToolResult
 
 BASE_URL = "http://127.0.0.1:8099"
+
+
+def _on_this_system(url: str) -> bool:
+    try:
+        here, there = urlsplit(BASE_URL), urlsplit(url)
+        return (there.scheme, there.hostname, there.port) == \
+            (here.scheme, here.hostname, here.port)
+    except ValueError:                      # e.g. a port that is not a number
+        return False
 
 # Natural-language cues, not system-specific ids: the same classification works
 # for every form, and for any system that words its errors like a human would.
@@ -343,12 +353,23 @@ def make_tools(session: BrowserSession):
 
     # -- generic ---------------------------------------------------------
     def open_page(path: str = "/") -> ToolResult:
+        # The path comes from the planner, and through it from whatever the
+        # documents say. "@evil.example/x" appended to the base URL is a URL
+        # whose host is evil.example, so only a path on this system is allowed.
+        if not _on_this_system(f"{BASE_URL}{path}") or not path.startswith("/") \
+                or path.startswith("//"):
+            return ToolResult(False, retriable=False, error_kind="invalid",
+                              error=f"open_page takes a path on the internal system, "
+                                    f"starting with '/': {path!r}")
         page = session.page
         try:
             page.goto(f"{BASE_URL}{path}", wait_until="domcontentloaded", timeout=15000)
         except PWTimeout as exc:
             return ToolResult(False, error=f"navigation timeout: {exc}", retriable=True,
                               error_kind="transient")
+        if not _on_this_system(page.url):
+            return ToolResult(False, retriable=False, error_kind="invalid",
+                              error=f"navigation left the internal system ({page.url})")
         shot = session.screenshot(f"page{path.replace('/', '-') or '-root'}")
         body = page.locator("body").inner_text()
         return ToolResult(True, data={"url": page.url, "text": body},

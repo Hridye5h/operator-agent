@@ -610,3 +610,31 @@ def test_a_value_the_document_does_not_give_cannot_be_supplied(trace):
 def test_inflected_triggers_still_select_the_procedure(goal, expected):
     procs = load_procedures(ROOT / "company" / "procedures")
     assert select_procedure(goal, procs)["name"] == expected
+
+
+# --------------------------------------------------------------------------
+# The browser stays on the internal system
+# --------------------------------------------------------------------------
+
+class NoBrowser:
+    """A session that fails the test if the page is touched."""
+
+    @property
+    def page(self):
+        pytest.fail("navigated")
+
+
+@pytest.mark.parametrize("path", ["@evil.example/x", "//evil.example/x", "evil.example",
+                                  ":8100/x", "http://evil.example/"])
+def test_open_page_will_not_leave_the_internal_system(path):
+    from tools import browser
+
+    result = browser.make_tools(NoBrowser())["open_page"](path)
+    assert not result.ok and result.error_kind == "invalid"
+
+
+@pytest.mark.parametrize("path", ["/", "/vendors", "/new?draft=1"])
+def test_paths_on_the_internal_system_are_allowed(path):
+    from tools import browser
+
+    assert browser._on_this_system(f"{browser.BASE_URL}{path}")
