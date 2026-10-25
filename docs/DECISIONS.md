@@ -216,3 +216,120 @@ nobody tried, and a mocked planner cannot catch either.
 `test_integration_llm.py` closes the loop: model-shaped replies, including
 fenced and prose-prefixed ones, drive the real browser against the real server
 through to the real verification read-back.
+
+---
+
+### 15. A contested value cannot be written — enforced by the loop
+
+"Escalates rather than guessing" used to be true because the deterministic
+planner was written to ask. Nothing in the loop required it. A probe with a
+planner that ignored the ambiguity and passed the printed total itself got the
+guess **written and verified**: the unresolved-value guard only checked for a
+*blank* amount, and verification compared fewer fields because there was no
+extracted amount to expect.
+
+Now a reader that finds a contradiction reports the field as `contested`, with
+its candidates. While it is contested, the loop refuses any write that sets that
+field — blank or filled in — and only a human reply naming one of the candidates
+clears it. The guarantee no longer depends on which planner is running.
+
+**Rejected:** strengthening the prompt. That is asking a model nicely not to do
+the thing the guard exists to stop.
+
+---
+
+### 16. Verification expectations come from the write, not the planner
+
+Verification compared what the planner chose to pass. A planner could therefore
+verify less than it wrote — and in the probe above it did, checking the due date
+but not the amount.
+
+The loop now fills every `expect_<field>` of a verify tool from the arguments of
+the write that actually happened, overriding anything the planner supplied, and
+records in the trace which written fields were compared and which the verify
+tool cannot check. Payables are now checked on all four written fields instead of
+two.
+
+**Rejected:** trusting `use_extracted`. It made the right thing easy, not the
+wrong thing impossible.
+
+---
+
+### 17. Tools have kinds; the loop never reasons by name
+
+The README used to say the loop "contains no mention of invoices". True of the
+word; false in substance — `_bind` and `_absorb` hardcoded `vendor`,
+`invoice_number`, `amount` and `due_date`, and the deterministic planner named
+every invoice tool and all three vendors. A second task would have needed edits
+to both.
+
+Each tool now declares a kind (`discover`, `read`, `write`, `verify`, `ask`) and
+a parameter schema. Binding matches a reader's `fields` to a writer's declared
+parameters by name; verification is recognised by kind. A static test fails if a
+task name appears in the framework code — and run against the earlier version it
+finds eleven.
+
+**Rejected:** a per-task adapter layer. It would have moved the coupling, not
+removed it.
+
+---
+
+### 18. Company procedures are data
+
+The brief describes an operator that uses *"company context to identify the
+right sources, procedures, and permitted actions."* A procedure is a JSON file:
+which tool plays each role, and the house rules for that kind of request. The
+agent picks one by matching the goal and shows it to the planner.
+
+That serves both planners. An LLM reads it as guidance. The deterministic planner
+executes it, which is what let the same planner code run the second task with no
+changes. If two procedures match equally, none is chosen — an ambiguous request
+should not be forced into the wrong process.
+
+**Rejected:** encoding procedures in the planner. That is how the first version
+ended up naming every invoice tool.
+
+---
+
+### 19. Fields are found by their visible label
+
+The browser tool used to fill `#vendor`, `#amount` and so on, and read the result
+from `#r-id`. It operated one form.
+
+It now finds fields by label (`get_by_label`), buttons by visible name, errors in
+`role="alert"` and confirmations in `role="status"`, and reads result rows by
+their header text. A new task needs a field-to-label map, not browser code, and
+the same approach works on any form built to be usable by a person.
+
+**Rejected:** a model reading screenshots for every field. Far more general, far
+slower, and far less certain — and this step needs certainty. It is the right
+fallback for forms without usable labels, which is listed under limitations.
+
+---
+
+### 20. Read the document, not the rendering
+
+After the switch to labels, every scenario still passed — yet the write tools
+were returning empty record IDs. The result page's stylesheet uppercases table
+headers, and Playwright's `inner_text()` returns rendered text, so "Record ID"
+came back as "RECORD ID" and every lookup missed. Only "GSTIN", already
+uppercase, survived.
+
+The scenarios passed because verification reads the record back independently —
+which is exactly the case for not trusting the success page. The rows are now
+read with `text_content()`, and a regression test asserts the parsed record; run
+against the old code, it fails.
+
+---
+
+### 21. A reply must point at exactly one candidate
+
+For the supplier task the candidates are "account on signed form" and "account
+from email update". Matching any word of a label meant "use the account from the
+email update" resolved to the **signed-form** account — the shared word "account"
+matched the first label first. And "not 3048…, use 9180…" picked the first
+number it saw.
+
+Only words distinctive to one label now count, and a reply naming two candidates
+resolves nothing. The cost is that some genuine replies need rephrasing. In a
+fraud check, being asked again is the right failure.

@@ -265,6 +265,24 @@ def read_invoice(file: str = "", vendor: str = "", latest: bool = False,
     parsed = parse_invoice(path)
     payload = parsed.to_dict()
 
+    # The generic contract the agent loop consumes: canonical string values the
+    # downstream form accepts as-is, and any contested field with its candidates.
+    # Field names match the parameters of submit_payable, which is what lets the
+    # loop bind them without knowing what an invoice is.
+    payload["fields"] = {
+        "vendor": parsed.vendor,
+        "invoice_number": parsed.invoice_number,
+        "due_date": parsed.due_date,
+        "amount": None if parsed.amount is None else f"{parsed.amount:.2f}",
+    }
+    if parsed.ambiguity:
+        payload["contested"] = {
+            "field": "amount",
+            "message": parsed.ambiguity,
+            "candidates": [{"label": label, "value": f"{value:.2f}"}
+                           for label, value in parsed.candidates],
+        }
+
     lines = [
         f"source: {parsed.source}",
         f"vendor: {parsed.vendor}",
@@ -274,9 +292,10 @@ def read_invoice(file: str = "", vendor: str = "", latest: bool = False,
     ]
     if parsed.ambiguity:
         lines.append("amount: UNRESOLVED")
-        lines.append(parsed.ambiguity)
+        lines.append(f"CONTESTED (amount): {parsed.ambiguity}")
     else:
-        lines.append(f"amount: {parsed.amount}")
+        lines.append(f"amount: {parsed.amount:.2f}" if parsed.amount is not None
+                     else "amount: (not found)")
     if parsed.missing:
         lines.append(f"missing_fields: {parsed.missing}")
 

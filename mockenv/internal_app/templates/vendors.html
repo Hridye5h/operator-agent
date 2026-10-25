@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Vendors — Meridian Systems{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Vendor master</h1>
+  {% if rows %}
+  <table>
+    <thead>
+      <tr><th>Code</th><th>Legal name</th><th>GSTIN</th><th>Bank account</th><th>IFSC</th><th>Registered</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><code>{{ r["code"] }}</code></td>
+        <td>{{ r["legal_name"] }}</td>
+        <td><code>{{ r["gstin"] }}</code></td>
+        <td>{{ r["bank_account"] }}</td>
+        <td>{{ r["ifsc"] }}</td>
+        <td class="muted">{{ r["registered_at"] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No vendors registered yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

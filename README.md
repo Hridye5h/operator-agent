@@ -12,11 +12,19 @@ runs, step by step, with the screenshots the agent's browser actually produced.
 Goal → Understand → Plan → Execute → Observe → Adapt → Verify → Complete
 ```
 
-The demonstrated task is invoice-to-ledger entry:
+One agent, two different jobs in two different systems — chosen from the request
+alone:
 
 > *"Find the latest invoice from Northwind Traders, extract the amount and due
 > date, record it as a payable in the internal AP system, and confirm it was
-> stored correctly."*
+> stored correctly."* → **Accounts Payable**
+
+> *"Onboard Orbit Logistics as a new supplier: register them in the Vendor Master
+> from their registration form and confirm the record."* → **Vendor Master**
+
+The second task was added without changing the agent loop or the planner — a new
+procedure file, new tools and a new form. A test enforces that the framework code
+names no task at all (see [Generalization](#generalization)).
 
 ---
 
@@ -25,26 +33,33 @@ The demonstrated task is invoice-to-ledger entry:
 ```bash
 pip install -r requirements.txt
 python -m playwright install chromium
-python mockenv/invoices/generate_invoices.py   # build the document corpus
+python mockenv/invoices/generate_invoices.py        # invoice corpus
+python mockenv/vendors/generate_vendor_forms.py     # supplier registration corpus
 python run_agent.py --scenario happy
 ```
 
 No API key is required — see [Running without an API key](#running-without-an-api-key).
 
-### The three scenarios
+### Scenarios
 
 | Command | What it demonstrates |
 |---|---|
+| **Accounts Payable** | |
 | `--scenario happy` | End-to-end autonomy, including recovery from a transient system outage |
-| `--scenario ambiguous` | The document contradicts itself; the agent escalates instead of guessing |
+| `--scenario ambiguous` | The invoice contradicts itself; the agent escalates instead of guessing |
 | `--scenario no_human` | Same ambiguity, nobody available — the agent **stops** rather than picking |
 | `--scenario high_value` | Payable over the approval limit; the agent gets sign-off before writing |
 | `--scenario declined` | Approval refused — nothing is written, and the human is not asked twice |
 | `--scenario duplicate` | Runs the task twice; the second pass confirms rather than double-entering |
+| **Vendor Master** — same agent, different procedure | |
+| `--scenario supplier` | Registers a supplier from their signed form and verifies all six fields |
+| `--scenario supplier_fraud_check` | A bank-account change arrived by email — the classic payment-fraud pattern. The agent refuses to pick and asks; a person confirms the signed-form account |
+| `--scenario supplier_no_human` | Same fraud pattern, nobody to ask — no vendor is created with either account |
 
-Useful flags: `--headed` (watch the browser), `--interactive` (answer escalations
-yourself), `--goal "..."` (any task), `--planner gemini|scripted`,
-`--approval-limit 50000` (0 disables the approval policy).
+Useful flags: `--headed` (watch the browser), `--record-video` (save the browser
+session as `run.webm`), `--interactive` (answer escalations yourself),
+`--goal "..."` (any request), `--planner gemini|scripted`, `--approval-limit 50000`
+(0 disables the approval policy).
 
 ---
 
@@ -78,16 +93,39 @@ Every run writes to `runs/<run-id>/`:
 - `trace.json` — every step, tool call, argument, observation and timing
 - `report.md` — the same run as a readable table
 - `artifacts/*.png` — browser screenshots at each submission
+- `artifacts/run.webm` — the whole browser session, with `--record-video`
 
 ---
 
 ## Why it is built this way
 
-**The loop is task-agnostic.** `agent/core.py` knows about goals, observations,
-tools and verification. It contains no mention of invoices. Task knowledge lives
-in the tools and in the goal string, which is what lets the same loop drive a
-different task. Adding a capability means registering a tool, not editing the
-agent.
+**The loop reasons about kinds and schemas, never names.** Every tool declares a
+*kind* — `discover`, `read`, `write`, `verify`, `ask` — and a parameter schema.
+A reader returns `fields`; a writer declares the fields it accepts; the loop
+binds one to the other by name. It has no fixed list of fields and no tool names,
+so a new task is new tools plus a goal. `tests/test_generalization.py` fails the
+build if a task name ever appears in the framework code.
+
+**Four guarantees live in the loop, not in the prompt.** Prompts are advice; a
+weaker or misbehaving planner must not be able to get around these:
+
+| Guarantee | What it stops |
+|---|---|
+| A run cannot finish until a verify tool has read the outcome back | reporting success on the strength of a success page |
+| Verification compares every field that was actually written | a planner verifying less than it wrote |
+| A contested value cannot be written until a human resolves it | a planner — or a model — guessing between two figures |
+| A declined action is never executed or re-asked | interrogating a person until they give in |
+
+**Company procedures are data.** How the organisation does each kind of request —
+which tool plays each role, and the house rules — lives in
+`company/procedures/*.json`. The agent selects one from the goal and shows it to
+whichever planner runs. An LLM reads it as guidance; the deterministic planner
+executes it.
+
+**The browser finds fields the way a person does.** Fields are located by their
+visible label, buttons by their visible name, and outcomes by ARIA roles (`alert`
+for errors, `status` for confirmations). No element ids, so the same code
+operates any form a person could fill in.
 
 **It writes through the browser, reads through the API.** The mock system
 exposes a JSON API, and the agent deliberately does not use it to write. Entry
@@ -122,9 +160,11 @@ a page, where a parser that fails loudly beats a model that quietly rounds a
 figure. So the LLM plans, and extraction is explicit parsing that reports gaps
 rather than inventing values.
 
-**Escalation is a first-class outcome.** When a document states two
-contradictory totals, the extractor does not pick one — it reports an ambiguity
-and the agent asks. If nobody answers, the run ends as `escalated` with nothing
+**Escalation is a first-class outcome.** When a document contradicts itself —
+two totals on an invoice, or a supplier's bank account changed by email — the
+reader reports the field as contested and the agent asks. A reply only resolves
+it if it names one of the candidates; "see the email from 15 March" is guidance,
+not an amount. If nobody answers, the run ends as `escalated` with nothing
 written. Doing nothing is the correct result there.
 
 **Approval is policy, enforced by the loop.** A tool can declare
@@ -146,11 +186,14 @@ falls back to `ScriptedPlanner` and says so:
 [01] PLAN planner downgraded: no GEMINI_API_KEY configured — using deterministic planner
 ```
 
-The fallback is **not** a recording of a successful run. It reasons over the same
-observation buffer and the same tool registry, and takes every branch at runtime
-from what it has actually seen — including noticing the ambiguity, choosing to
-escalate, and distinguishing a retriable failure from a permanent one. It reasons
-with rules instead of a model.
+The fallback is **not** a recording of a successful run. It executes the company
+procedure the agent selected, over the same observation buffer and tool registry,
+and takes every branch at runtime from what it has actually seen — choosing the
+document by matching the request against what discovery returned, noticing a
+contested value, escalating, and telling a retriable failure from a conflict from
+a rejection. It reasons with rules instead of a model, contains no task-specific
+names, and only covers documented procedures; a request with no matching
+procedure needs the LLM planner.
 
 The Gemini path is covered without a key by stubbing the HTTP client: the tests
 exercise the real planner against fenced, prose-wrapped, truncated and
@@ -169,40 +212,68 @@ python run_agent.py --scenario happy --planner gemini
 
 ---
 
+## Generalization
+
+The second task — onboarding a supplier into the Vendor Master — was added with:
+
+| Added | Changed |
+|---|---|
+| `company/procedures/onboard_supplier.json` | `agent/core.py` — **nothing** |
+| `tools/vendor_forms.py` (reader for a new document type) | `agent/llm.py` — **nothing** |
+| `register_vendor` / `verify_vendor` (a field-to-label map each) | `tools/browser.py` perception — **nothing** |
+| a Vendor Master form in the mock environment | |
+
+The framework is held to that by a test rather than a promise.
+`test_framework_code_names_no_task` scans the loop, the planner, the registry and
+the procedure loader for any tool, field or vendor name, and fails if one
+appears.
+
+**What this does not yet prove:** both procedures share the
+discover → read → write → verify shape. A task of a different shape — say,
+reconciling two systems, or a multi-record batch — would run on the LLM planner
+unchanged, but the deterministic planner only executes that one shape.
+
+---
+
 ## The environment
 
-`mockenv/` is a stand-in company, built to misbehave in the three ways real
-systems do:
+`mockenv/` is a stand-in company with two systems — Accounts Payable and the
+Vendor Master — built to misbehave in the ways real systems do:
 
 | Failure mode | Trigger | Correct agent response |
 |---|---|---|
 | `SYS-503` transient outage | first submission of each process | retry unchanged |
-| `VAL-003` strict amount format | `INR 73,219.00` instead of `73219.00` | reform the value |
-| `VAL-006` duplicate guard | invoice already recorded | stop, do not double-enter |
+| strict formats | `INR 73,219.00`; a malformed GSTIN, PAN or IFSC | reform the value or ask |
+| `VND-004` consistency check | PAN does not match the one inside the GSTIN | do not retry unchanged |
+| duplicate guards | invoice number or GSTIN already on file | confirm, do not double-enter |
 
 These are pinned by tests in `tests/test_internal_app.py` so the agent's
 recovery paths are exercised against something that genuinely fails, rather than
 asserted against a mock that always succeeds.
 
-The six invoices use three different layouts with different field labels
-(`Invoice Number` / `Reference` / `Document`), so extraction cannot be one regex.
-One of them is internally contradictory on purpose.
+The six invoices use three layouts with different field labels (`Invoice Number`
+/ `Reference` / `Document`), so extraction cannot be one regex; one states two
+different totals. Of the three supplier forms, one carries a bank-account change
+received by email, and one has an account number with leading zeros, which must
+survive extraction, the form, the database and verification as a string.
 
 ---
 
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 85 tests, ~4s
-python -m pytest tests/ -m integration    # + a full run through the LLM path (~20s)
+python -m pytest tests/ -q                # 120 tests, ~3s
+python -m pytest tests/ -m integration    # + 7 runs against the real app and browser (~1 min)
 ```
 
 | File | Covers |
 |---|---|
 | `test_agent_loop.py` | Loop invariants: verification cannot be skipped, failed verification is not success, retriable vs permanent, tool crashes survive, escalation stops the run, low confidence reroutes to a human, declined actions are never executed or re-asked, a broken policy fails closed |
+| `test_generalization.py` | A misbehaving planner cannot write a contested value or verify less than it wrote; one deterministic planner executes both procedures; overlapping labels and negations in a human reply are not misread; the framework names no task |
 | `test_extraction.py` | All six invoices against ground truth, the columnar-layout regression, ambiguity reported not resolved |
 | `test_planner.py` | Parsing what a model actually sends (fenced, prose-wrapped, truncated, blocked), the Gemini request shape, and how the agent re-prompts an unusable reply |
-| `test_internal_app.py` | The environment's three failure modes behave as specified |
+| `test_internal_app.py` | The environment's failure modes behave as specified |
+| `test_integration_browser.py` | Label-based form filling and result reading against the real app; leading zeros through the whole stack; the fraud pattern with and without a person to ask (marked `integration`) |
 | `test_integration_llm.py` | A full run driven by LLM-shaped replies against the real browser, server and verification read-back (marked `integration`) |
 
 The loop tests use stub tools, so they assert the agent's guarantees directly
@@ -213,11 +284,15 @@ and run in milliseconds.
 ## Layout
 
 ```
-agent/            core.py (the loop) · llm.py (planners) · tools.py (registry) · trace.py
-tools/            files.py (documents) · browser.py (Playwright) · human.py (escalation)
-mockenv/          internal_app/ (FastAPI + SQLite + HTML forms) · invoices/ (generated PDFs)
-runs/<run-id>/    trace.json · report.md · artifacts/*.png
-docs/             ARCHITECTURE.md · DECISIONS.md · LIMITATIONS.md
+agent/              core.py (the loop) · llm.py (planners) · tools.py (registry, kinds)
+                    procedures.py (selecting and checking procedures) · trace.py
+company/procedures/ record_vendor_invoice.json · onboard_supplier.json
+tools/              files.py (invoices) · vendor_forms.py (supplier forms)
+                    browser.py (label-based perception) · human.py (escalation)
+mockenv/            internal_app/ (FastAPI + SQLite + HTML forms, two systems)
+                    invoices/ · vendors/ (generated PDFs)
+runs/<run-id>/      trace.json · report.md · artifacts/*.png · artifacts/run.webm
+docs/               ARCHITECTURE.md · DECISIONS.md · LIMITATIONS.md · COMPONENTS.md
 ```
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design,

@@ -2,21 +2,31 @@
 
     Goal -> Understand -> Plan -> Execute -> Observe -> Adapt -> Verify -> Complete
 
-The loop itself knows nothing about invoices. It holds a goal, an observation
-buffer and a tool registry, and repeats: ask the planner for the next action,
-run it, record what came back, decide whether to continue. Task knowledge lives
-in the tools and in the goal string, which is what lets the same loop drive a
-different task without modification.
+The loop holds a goal, an observation buffer, a working state and a tool
+registry, and repeats: ask the planner for the next action, run it, record what
+came back, decide whether to continue.
 
-Three properties are deliberate:
+It reasons about tools by their declared **kind** (discover, read, write,
+verify, ask) and their declared **parameter schema** — never by name, and never
+by a fixed list of fields. A reader returns ``fields``; a writer declares the
+fields it accepts; binding matches the two by name. So the loop carries no
+knowledge of any particular task, and a new task is new tools plus a goal.
 
-* **Verification is mandatory.** A run cannot report success on the strength of
-  a tool returning OK. It must pass an explicit verification step that reads the
-  outcome back from the system of record.
+Four properties are enforced here rather than requested of the planner, because
+prompts are advice and a weaker or misbehaving planner must not be able to get
+around them:
+
+* **Verification is mandatory.** A run cannot report success until a verify
+  tool has read the outcome back from the system of record.
+* **Verification covers what was written.** Expectations are taken from the
+  arguments of the write that actually happened, not from whatever the planner
+  chose to pass, so a verify call cannot quietly check fewer fields.
+* **Contested values cannot be guessed.** While a reader has reported a field
+  as contested, no write that sets that field may run — whether the planner left
+  it blank or filled in a value of its own. Only a human answer naming one of
+  the candidates resolves it.
 * **Failure is an observation.** Tools never raise into the loop; they return a
   result the planner can reason about, including whether a retry is sensible.
-* **Escalation beats guessing.** When the planner signals low confidence or a
-  tool reports an ambiguity, the agent asks a human rather than picking.
 """
 
 from __future__ import annotations
@@ -27,15 +37,15 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from agent.llm import Decision, Planner
-from agent.tools import ToolRegistry, ToolResult
+from agent.tools import Tool, ToolRegistry, ToolResult
 from agent.trace import Trace
 
 SYSTEM_PROMPT = """\
 You are an autonomous operator completing a business task inside a company's systems.
 
-You work in a loop. At each turn you receive the goal, the tools available, and \
-everything observed so far. You reply with exactly one JSON object choosing the \
-next single action:
+You work in a loop. At each turn you receive the goal, the company procedure for \
+this kind of request, the tools available, and everything observed so far. You \
+reply with exactly one JSON object choosing the next single action:
 
   {"action": "<tool name or 'finish'>",
    "args": {...},
@@ -45,11 +55,17 @@ next single action:
 Rules you must follow:
 - Take ONE action per turn. Base it on what you have actually observed, not on \
 assumption.
+- Follow the company procedure when one is given; it is how this organisation \
+does this work.
 - Never invent a value you have not read. If a required value is missing or the \
-source contradicts itself, call ask_human instead of choosing.
+source contradicts itself, call ask_human instead of choosing. Writes that touch \
+a contested value are refused until a human resolves it.
+- To pass values you have already extracted, set "use_extracted": true in args \
+rather than copying them.
 - If a tool fails and the error is marked retriable, retrying the same call is \
-reasonable. If it is marked permanent, change the arguments or the approach — \
-repeating it unchanged will fail again.
+reasonable. A conflict means the target already exists: confirm it rather than \
+creating it again. If an error is permanent, change the arguments or the \
+approach — repeating it unchanged will fail again.
 - Before finishing you MUST verify the outcome by reading it back from the \
 system of record. Do not treat a success page as proof.
 - Set confidence below 0.4 when you are unsure; low confidence will route the \
@@ -57,8 +73,11 @@ step to a human.
 - Reply with the JSON object only.
 """
 
-
 ApprovalPolicy = Callable[[str, dict[str, Any]], str | None]
+
+# Working-state keys the loop maintains for itself, as opposed to values the
+# tools established. They are never bound into a tool's arguments.
+_INTERNAL = "_"
 
 
 @dataclass
@@ -66,7 +85,11 @@ class AgentConfig:
     max_steps: int = 14
     confidence_floor: float = 0.4
     require_verification: bool = True
-    verification_tool: str = "verify_payable"
+    #: Restrict verification to one named tool. ``None`` accepts any tool whose
+    #: declared kind is ``verify``.
+    verification_tool: str | None = None
+    #: Tool used to consult a person, for escalation and approval.
+    human_tool: str = "ask_human"
     #: How many times to re-prompt when a planner reply cannot be parsed.
     planner_retries: int = 2
     #: Called before every tool invocation. Return a reason string to require
@@ -97,8 +120,12 @@ class Agent:
         self.config = config or AgentConfig()
 
     # -- prompt assembly ---------------------------------------------------
-    def _context(self, goal: str, observations: list[str], state: dict[str, Any]) -> str:
-        parts = [f"GOAL: {goal}", "", "TOOLS:", self.tools.describe(), ""]
+    def _context(self, goal: str, observations: list[str], state: dict[str, Any],
+                 procedure: dict[str, Any] | None) -> str:
+        parts = [f"GOAL: {goal}", ""]
+        if procedure:
+            parts += [render_procedure(procedure), ""]
+        parts += ["TOOLS:", self.tools.describe(), ""]
         if state:
             parts += ["WORKING STATE (values you have actually established):",
                       json.dumps(state, indent=2, default=str), ""]
@@ -107,21 +134,32 @@ class Agent:
         parts += ["", "What is the next single action? Reply with JSON only."]
         return "\n".join(parts)
 
+    def _is_verification(self, action: str) -> bool:
+        if self.config.verification_tool:
+            return action == self.config.verification_tool
+        return self.tools.kind_of(action) == "verify"
+
     # -- main loop ---------------------------------------------------------
-    def run(self, goal: str, trace: Trace, state: dict[str, Any] | None = None) -> RunResult:
+    def run(self, goal: str, trace: Trace, state: dict[str, Any] | None = None,
+            procedure: dict[str, Any] | None = None) -> RunResult:
         observations: list[str] = []
         state = dict(state or {})
         verified = False
         evidence: dict[str, Any] = {}
         last_error: str | None = None
+        last_write: dict[str, Any] | None = None
         granted: set[str] = set()
         declined: dict[str, int] = {}
         stalls = 0
+        human = self.config.human_tool
 
         trace.add("plan", f"planner={self.planner.name}, max_steps={self.config.max_steps}")
+        if procedure:
+            trace.add("plan", f"procedure={procedure.get('name')}: "
+                              f"{procedure.get('purpose', '')}".strip())
 
         for step in range(self.config.max_steps):
-            context = self._context(goal, observations, state)
+            context = self._context(goal, observations, state, procedure)
 
             # A model will occasionally reply with prose, a truncated object, or
             # nothing at all. That is a bad turn, not a dead run: show it the
@@ -151,8 +189,9 @@ class Agent:
             # --- finish requested ---------------------------------------
             if decision.action == "finish":
                 if self.config.require_verification and not verified:
+                    which = self.config.verification_tool or "a verify tool"
                     nudge = ("Refused to finish: the outcome has not been verified. "
-                             f"Call {self.config.verification_tool} first.")
+                             f"Call {which} first.")
                     trace.add("decision", nudge)
                     observations.append(f"SYSTEM: {nudge}")
                     continue
@@ -163,12 +202,12 @@ class Agent:
 
             # --- low confidence routes to a human ------------------------
             if decision.confidence < self.config.confidence_floor \
-                    and decision.action != "ask_human" and "ask_human" in self.tools:
+                    and decision.action != human and human in self.tools:
                 trace.add("decision",
                           f"confidence {decision.confidence:.2f} below floor; escalating instead",
                           intended=decision.action)
                 decision = Decision(
-                    "ask_human",
+                    human,
                     {"question": f"I was about to call {decision.action} but I am not "
                                  f"confident. {decision.reasoning} How should I proceed?"},
                     reasoning="low confidence",
@@ -177,14 +216,16 @@ class Agent:
             trace.add("decision", decision.reasoning or decision.action,
                       action=decision.action, confidence=decision.confidence)
 
-            # --- execute --------------------------------------------------
-            args = self._bind(decision, state)
+            # --- bind arguments -----------------------------------------
+            tool = self.tools.get(decision.action)
+            args = self._bind(decision, tool, state, last_write)
 
-            blocked = self._unresolved_block(decision.action, args, state)
+            # --- guards -------------------------------------------------
+            blocked = self._contested_block(tool, args, state)
             if blocked:
                 stalls += 1
                 if stalls > 2:
-                    msg = ("a required value is still unresolved and the planner "
+                    msg = ("a contested value is still unresolved and the planner "
                            "kept trying to write anyway; stopping without writing.")
                     trace.add("escalation", msg)
                     trace.finish("escalated")
@@ -209,29 +250,38 @@ class Agent:
                 observations.append(f"SYSTEM: {gate}")
                 continue
 
+            # --- execute ------------------------------------------------
             trace.add("tool_call", f"{decision.action}({_fmt_args(args)})")
             result, elapsed = self.tools.invoke(decision.action, args)
 
             trace.add("observation", f"{decision.action}: {result.brief(240)}",
                       ok=result.ok, retriable=result.retriable,
+                      error_kind=result.error_kind,
                       elapsed_ms=elapsed, artifacts=result.artifacts or [])
 
-            observations.append(f"{decision.action}({_fmt_args(args)}) -> {result.brief()}")
+            observations.append(f"{decision.action}({_fmt_args(args)}) -> {result.brief(1500)}")
 
             # --- absorb the result into working state --------------------
+            kind = tool.kind if tool else None
             if result.ok:
                 last_error = None
-                self._absorb(decision.action, result, state)
-                if decision.action == self.config.verification_tool:
+                self._absorb(kind, result, state)
+
+                if kind == "write":
+                    last_write = {"tool": decision.action, "args": dict(args)}
+
+                if self._is_verification(decision.action):
                     verified = True
-                    evidence = result.data if isinstance(result.data, dict) else {"result": result.data}
-                    trace.add("verification", result.brief(240), **evidence)
+                    evidence = result.data if isinstance(result.data, dict) \
+                        else {"result": result.data}
+                    coverage = _coverage(tool, args, last_write)
+                    trace.add("verification", result.brief(240), **evidence, **coverage)
             else:
                 last_error = result.error
-                if decision.action == self.config.verification_tool:
+                if self._is_verification(decision.action):
                     verified = False
                     trace.add("verification", f"FAILED: {result.error}")
-                if decision.action == "ask_human" and not result.retriable:
+                if decision.action == human and not result.retriable:
                     trace.add("escalation", result.error or "unanswered escalation")
                     trace.finish("escalated")
                     return RunResult("escalated", result.error or "needs a human",
@@ -244,26 +294,26 @@ class Agent:
                          verified, evidence, trace, self.config.max_steps)
 
     # -- guards ------------------------------------------------------------
-    WRITE_PREFIXES = ("submit", "create", "update", "delete", "post", "send")
+    def _contested_block(self, tool: Tool | None, args: dict[str, Any],
+                         state: dict[str, Any]) -> str | None:
+        """Refuse a write that would set a value a reader reported as contested.
 
-    def _unresolved_block(self, action: str, args: dict[str, Any],
-                          state: dict[str, Any]) -> str | None:
-        """Refuse a write while a value it depends on is still in question.
-
-        Without this the agent submits a blank amount, the form rejects it, and
-        the run recovers — but it has already touched the system of record with
-        a request it knew was incomplete. Catching it here keeps a known-bad
-        write from leaving the agent at all.
+        This holds whether the planner left the value blank or supplied one of
+        its own. The first case would send a request known to be incomplete; the
+        second is a guess, and a guess that would then verify cleanly, because
+        verification checks the record against what was written. Only a human
+        answer naming one of the candidates clears the contest.
         """
-        if not state.get("unresolved"):
+        contested = state.get("_contested")
+        if not contested or tool is None or tool.kind != "write":
             return None
-        if not action.startswith(self.WRITE_PREFIXES):
+        name = contested.get("field")
+        if name not in tool.params:
             return None
-        missing = [k for k in ("amount",) if not str(args.get(k, "")).strip()]
-        if not missing:
-            return None
-        return (f"Refusing {action}: {', '.join(missing)} is still unresolved "
-                f"({state['unresolved']}). Resolve it with ask_human before writing.")
+        options = ", ".join(f"{c.get('label')}={c.get('value')}"
+                            for c in contested.get("candidates", []))
+        return (f"Refusing {tool.name}: '{name}' is contested ({options}) and has "
+                f"not been resolved by a human. Ask with ask_human before writing.")
 
     # -- approval ----------------------------------------------------------
     def _approval_gate(self, action: str, args: dict[str, Any],
@@ -313,12 +363,13 @@ class Agent:
             return (f"A human already declined {action} with these exact arguments. "
                     f"Change the action or stop; it will not be approved by asking again.")
 
-        if "ask_human" not in self.tools:
+        human = self.config.human_tool
+        if human not in self.tools:
             trace.add("escalation", f"approval required ({reason}) but no human channel exists")
             return "no_human"
 
         trace.add("decision", f"approval required before {action}: {reason}")
-        verdict, _ = self.tools.invoke("ask_human", {
+        verdict, _ = self.tools.invoke(human, {
             "question": (f"Approve this action?\n"
                          f"  action: {action}({_fmt_args(args)})\n"
                          f"  why approval is required: {reason}"),
@@ -340,73 +391,127 @@ class Agent:
         return (f"A human declined {action}. Do not retry it unchanged; "
                 f"either adjust the action or stop.")
 
-    # -- helpers -----------------------------------------------------------
-    def _bind(self, decision: Decision, state: dict[str, Any]) -> dict[str, Any]:
-        """Resolve convenience arguments against established working state.
+    # -- binding -----------------------------------------------------------
+    def _bind(self, decision: Decision, tool: Tool | None, state: dict[str, Any],
+              last_write: dict[str, Any] | None) -> dict[str, Any]:
+        """Fill a tool's arguments from what the run has established.
 
-        The planner may say "use the values you extracted" rather than copying
-        numbers into its reply. Binding here keeps extracted values authoritative
-        and stops the planner from re-typing (and mistyping) a figure.
+        Driven entirely by the tool's declared parameters, so it works for any
+        task: a parameter named ``x`` is filled from the established value ``x``,
+        and a parameter named ``expect_x`` from the value of ``x`` that was
+        actually written.
+
+        For verify tools the expectations are always taken from the last write,
+        even if the planner passed its own. The point of verification is to
+        compare the record with what was sent, and letting the planner choose
+        the expectations would let it check less than it wrote.
         """
         args = dict(decision.args)
         wants_state = args.pop("use_extracted", False)
         args.pop("retry", None)
         options_flag = args.pop("options_from_observation", False)
 
-        if wants_state:
-            for key in ("vendor", "invoice_number", "amount", "due_date"):
-                if key in state and key not in args:
-                    args[key] = state[key]
-            if decision.action.startswith("verify"):
-                if "amount" in args:
-                    args["expect_amount"] = args.pop("amount")
-                if "due_date" in args:
-                    args["expect_due_date"] = args.pop("due_date")
-                args.pop("vendor", None)
+        if tool is None:
+            return args
 
-        if options_flag and state.get("amount_options"):
-            args["options"] = state["amount_options"]
+        written = (last_write or {}).get("args", {})
+
+        if tool.kind == "verify":
+            for p in tool.params:
+                if p.startswith("expect_"):
+                    source = p[len("expect_"):]
+                    if source in written:
+                        args[p] = written[source]
+                    elif p not in args and _public(state, source):
+                        args[p] = state[source]
+                elif p not in args:
+                    if p in written:
+                        args[p] = written[p]
+                    elif _public(state, p):
+                        args[p] = state[p]
+
+        elif wants_state:
+            for p in tool.params:
+                if p not in args and _public(state, p):
+                    args[p] = state[p]
+
+        if options_flag and "options" in tool.params and state.get("_contested"):
+            args["options"] = [f"{c.get('label')}: {c.get('value')}"
+                               for c in state["_contested"].get("candidates", [])]
 
         return args
 
-    def _absorb(self, action: str, result: ToolResult, state: dict[str, Any]) -> None:
+    # -- absorbing results -------------------------------------------------
+    def _absorb(self, kind: str | None, result: ToolResult, state: dict[str, Any]) -> None:
         data = result.data
         if not isinstance(data, dict):
             return
 
-        if action.startswith("read_"):
-            for key in ("vendor", "invoice_number", "due_date"):
-                if data.get(key):
-                    state[key] = data[key]
-            if data.get("amount") is not None:
-                state["amount"] = f"{float(data['amount']):.2f}"
-            if data.get("ambiguity"):
-                state["unresolved"] = data["ambiguity"]
-                candidates = data.get("amount_candidates", [])
-                state["amount_candidates"] = candidates
-                state["amount_options"] = [
-                    f"{c['label']}: {c['value']:.2f}" for c in candidates
-                ]
+        if kind == "read":
+            fields = data.get("fields")
+            if isinstance(fields, dict):
+                for key, value in fields.items():
+                    if value not in (None, "") and not key.startswith(_INTERNAL):
+                        state[key] = value
 
-        elif action == "ask_human":
-            answer = str(data.get("answer", ""))
-            resolved = _resolve_amount(answer, state.get("amount_candidates") or [])
-            if resolved is not None:
-                state["amount"] = f"{resolved:.2f}"
-                state.pop("unresolved", None)
-                state.pop("amount_options", None)
-                state.pop("amount_candidates", None)
+            contested = data.get("contested")
+            if isinstance(contested, dict) and contested.get("field"):
+                state["_contested"] = contested
+                state.pop(contested["field"], None)     # a contested value is not established
             else:
-                # The reply did not name one of the amounts in question, so it is
-                # guidance, not a resolution. Inventing a figure from whatever
-                # digits it happens to contain would corrupt the ledger silently
-                # and still pass verification, since verification checks the
-                # write against intent and intent would already be wrong.
-                state["human_guidance"] = answer
+                state.pop("_contested", None)
 
-        elif action.startswith("submit"):
+        elif kind == "ask":
+            answer = str(data.get("answer", ""))
+            contested = state.get("_contested")
+            if contested:
+                chosen = _resolve_choice(answer, contested.get("candidates", []))
+                if chosen is not None:
+                    state[contested["field"]] = chosen
+                    state.pop("_contested", None)
+                    return
+            # The reply did not name one of the values in question, so it is
+            # guidance, not a resolution. Reading a figure out of whatever digits
+            # it happens to contain would corrupt the record silently and still
+            # pass verification.
+            state["human_guidance"] = answer
+
+        elif kind == "write":
             if data.get("record_id"):
                 state["record_id"] = data["record_id"]
+
+
+def render_procedure(procedure: dict[str, Any]) -> str:
+    """Company procedure as the planner sees it."""
+    steps = procedure.get("steps", {})
+    order = [r for r in ("discover", "read", "write", "verify") if r in steps]
+    lines = [f"COMPANY PROCEDURE: {procedure.get('name', '')}"]
+    if procedure.get("purpose"):
+        lines.append(f"  Purpose: {procedure['purpose']}")
+    if order:
+        lines.append("  Steps: " + " -> ".join(f"{r}={steps[r]}" for r in order))
+    for rule in procedure.get("rules", []):
+        lines.append(f"  Rule: {rule}")
+    return "\n".join(lines)
+
+
+def _public(state: dict[str, Any], key: str) -> bool:
+    return not key.startswith(_INTERNAL) and state.get(key) not in (None, "")
+
+
+def _coverage(tool: Tool | None, args: dict[str, Any],
+              last_write: dict[str, Any] | None) -> dict[str, Any]:
+    """Which written fields the verification actually compared."""
+    if tool is None or not last_write:
+        return {}
+    written = set(last_write.get("args", {}))
+    compared = {p[len("expect_"):] for p in args if p.startswith("expect_")}
+    keys = {p for p in args if not p.startswith("expect_")}
+    checked = written & (compared | keys)
+    return {
+        "verified_fields": sorted(checked),
+        "unverifiable_fields": sorted(written - checked),
+    }
 
 
 MONEY_TOKEN = re.compile(r"\d[\d,]*(?:\.\d{1,2})?")
@@ -420,6 +525,13 @@ def _numbers_in(text: str) -> list[float]:
         except ValueError:
             pass
     return out
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_amount(answer: str, candidates: list[dict[str, Any]]) -> float | None:
@@ -446,20 +558,72 @@ def _resolve_amount(answer: str, candidates: list[dict[str, Any]]) -> float | No
 
     values = [(c.get("label", ""), float(c["value"])) for c in candidates if "value" in c]
 
-    # Named by value.
-    for number in _numbers_in(answer):
-        for _, value in values:
-            if abs(number - value) < 0.005:
-                return value
+    # Named by value. A reply naming two of the candidates ("not 118,590 — use
+    # 96,400") is not resolved here: picking the first one mentioned would follow
+    # the word "not" straight into the wrong figure.
+    named = {value for number in _numbers_in(answer)
+             for _, value in values if abs(number - value) < 0.005}
+    if len(named) == 1:
+        return named.pop()
+    if len(named) > 1:
+        return None
 
     # Named by label ("the amended one", "printed total").
-    lowered = answer.lower()
-    for label, value in values:
-        words = [w for w in label.lower().replace("total", " ").split() if len(w) > 3]
-        if words and any(w in lowered for w in words):
-            return value
+    index = _match_label(answer, [label for label, _ in values])
+    return values[index][1] if index is not None else None
 
-    return None
+
+def _match_label(answer: str, labels: list[str]) -> int | None:
+    """Index of the one label the reply refers to, or None.
+
+    Only words that belong to a single label count. Labels such as "account on
+    signed form" and "account from email update" share "account", and letting a
+    shared word decide would resolve "use the account from the email" to the
+    signed-form account — the opposite of what was said. A reply that points at
+    more than one label, or at none, resolves nothing.
+    """
+    lowered = answer.lower()
+    word_sets = [set(re.findall(r"[a-z]{4,}", label.lower())) for label in labels]
+    hits = []
+    for i, words in enumerate(word_sets):
+        others = set().union(*(ws for j, ws in enumerate(word_sets) if j != i))
+        distinctive = words - others - {"total", "value"}
+        if any(re.search(rf"\b{re.escape(w)}\b", lowered) for w in distinctive):
+            hits.append(i)
+    return hits[0] if len(hits) == 1 else None
+
+
+def _resolve_choice(answer: str, candidates: list[dict[str, Any]]) -> str | None:
+    """Pick one of the contested candidates from a human reply, or None.
+
+    Numeric candidates are matched numerically (so "96400" picks "96400.00");
+    anything else is matched by its exact value appearing in the reply, or by a
+    distinctive word of its label. Returns the candidate's own value, so what is
+    written is exactly what was offered.
+    """
+    if not candidates:
+        return None
+
+    if all(_as_float(c.get("value")) is not None for c in candidates):
+        chosen = _resolve_amount(answer, [{"label": c.get("label", ""),
+                                           "value": _as_float(c["value"])}
+                                          for c in candidates])
+        if chosen is None:
+            return None
+        for c in candidates:
+            if abs(_as_float(c["value"]) - chosen) < 0.005:
+                return str(c["value"])
+        return None
+
+    lowered = answer.lower()
+    named = [str(c.get("value")) for c in candidates
+             if str(c.get("value", "")) and str(c.get("value")).lower() in lowered]
+    if len(named) == 1:
+        return named[0]
+    if len(named) > 1:
+        return None
+    index = _match_label(answer, [str(c.get("label", "")) for c in candidates])
+    return str(candidates[index].get("value")) if index is not None else None
 
 
 def _fmt_args(args: dict[str, Any]) -> str:

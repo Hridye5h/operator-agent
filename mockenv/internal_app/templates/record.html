@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Meridian Systems{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>{{ title }}</h1>
+  <div class="ok" id="success-banner" role="status">{{ banner }}</div>
+  <table style="margin-top:18px">
+    <tbody>
+      {% for label, value in rows %}
+      <tr><th>{{ label }}</th><td>{{ value }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="margin-top:16px"><a href="{{ back }}">Back</a></p>
+</div>
+{% endblock %}

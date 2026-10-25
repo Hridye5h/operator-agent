@@ -1,0 +1,17 @@
+{
+  "name": "record_vendor_invoice",
+  "purpose": "Record a supplier's invoice as a payable in Accounts Payable.",
+  "triggers": ["invoice", "payable", "accounts payable"],
+  "steps": {
+    "discover": "list_invoices",
+    "read": "read_invoice",
+    "write": "submit_payable",
+    "verify": "verify_payable"
+  },
+  "rules": [
+    "Take the amount and due date from the invoice itself; never type them from memory.",
+    "If the invoice states two different amounts, do not choose between them; ask a person.",
+    "Payables above the auto-approval limit need sign-off before they are recorded.",
+    "If the invoice is already on file, confirm the existing record instead of entering it again."
+  ]
+}

@@ -1,9 +1,18 @@
 """Tool registry.
 
 Tools are the only way the agent touches the world. Each one declares a JSON
-schema for its arguments, and the planner picks from this registry by name — so
-adding a capability means registering a tool, not editing the agent loop. That
-is what keeps the loop task-agnostic.
+schema for its arguments and a *kind* describing its role, and the loop reasons
+about kinds rather than names — so adding a capability means registering a tool,
+not editing the agent loop. That is what keeps the loop task-agnostic.
+
+Kinds:
+
+* ``discover`` - find what exists (list documents, search records)
+* ``read``     - extract fields from one source; may report a contested field
+* ``write``    - change the system of record
+* ``verify``   - read the outcome back and compare it with intent
+* ``ask``      - consult a human
+* ``other``    - anything else
 """
 
 from __future__ import annotations
@@ -12,6 +21,26 @@ import inspect
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
+
+KINDS = ("discover", "read", "write", "verify", "ask", "other")
+
+# Used only when a tool is registered without an explicit kind. Real tools in
+# run_agent.py declare their kind; this keeps quick stubs and tests concise.
+_PREFIX_KINDS = (
+    (("list_", "find_", "search_"), "discover"),
+    (("read_", "get_", "extract_"), "read"),
+    (("submit_", "create_", "update_", "delete_", "register_", "record_",
+      "post_", "send_"), "write"),
+    (("verify_", "check_", "confirm_"), "verify"),
+    (("ask_",), "ask"),
+)
+
+
+def infer_kind(name: str) -> str:
+    for prefixes, kind in _PREFIX_KINDS:
+        if name.startswith(prefixes):
+            return kind
+    return "other"
 
 
 @dataclass
@@ -22,6 +51,12 @@ class ToolResult:
     is the compact rendering shown to the planner. Keeping them separate means
     the agent can hold a full record in working state while the prompt stays
     small.
+
+    ``error_kind`` refines a failure for the planner:
+
+    * ``transient`` - worth retrying unchanged
+    * ``conflict``  - the target already exists; the work may already be done
+    * ``invalid``   - the input was rejected; retrying unchanged cannot help
     """
 
     ok: bool
@@ -30,11 +65,15 @@ class ToolResult:
     retriable: bool = False
     artifacts: list[str] | None = None
     display: str | None = None
+    error_kind: str | None = None
 
     def brief(self, limit: int = 600) -> str:
         """Short rendering for the planner's observation buffer."""
         if not self.ok:
-            tag = "retriable" if self.retriable else "permanent"
+            if self.error_kind == "conflict":
+                tag = "conflict"
+            else:
+                tag = "retriable" if self.retriable else "permanent"
             return f"ERROR ({tag}): {self.error}"
         if self.display is not None:
             text = self.display
@@ -52,14 +91,20 @@ class Tool:
     parameters: dict[str, Any]
     fn: Callable[..., ToolResult]
     requires_approval: bool = False
+    kind: str = "other"
 
     def spec(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "kind": self.kind,
             "description": self.description,
             "parameters": self.parameters,
             "requires_approval": self.requires_approval,
         }
+
+    @property
+    def params(self) -> list[str]:
+        return list(self.parameters.get("properties", {}))
 
 
 class ToolRegistry:
@@ -69,12 +114,15 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
             raise ValueError(f"duplicate tool: {tool.name}")
+        if tool.kind not in KINDS:
+            raise ValueError(f"unknown tool kind {tool.kind!r} for {tool.name}")
         self._tools[tool.name] = tool
 
     def tool(self, name: str, description: str, parameters: dict[str, Any],
-             requires_approval: bool = False):
+             requires_approval: bool = False, kind: str | None = None):
         def deco(fn: Callable[..., ToolResult]) -> Callable[..., ToolResult]:
-            self.register(Tool(name, description, parameters, fn, requires_approval))
+            self.register(Tool(name, description, parameters, fn, requires_approval,
+                               kind or infer_kind(name)))
             return fn
         return deco
 
@@ -83,6 +131,13 @@ class ToolRegistry:
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
+
+    def kind_of(self, name: str) -> str | None:
+        tool = self._tools.get(name)
+        return tool.kind if tool else None
+
+    def by_kind(self, kind: str) -> list[Tool]:
+        return [t for t in self._tools.values() if t.kind == kind]
 
     def names(self) -> list[str]:
         return list(self._tools)
@@ -104,7 +159,7 @@ class ToolRegistry:
             else:
                 args = ""
             flag = "  [NEEDS APPROVAL]" if t.requires_approval else ""
-            out.append(f"- {t.name}({args}) -> {t.description}{flag}")
+            out.append(f"- {t.name}({args}) [{t.kind}] -> {t.description}{flag}")
         return "\n".join(out)
 
     def invoke(self, name: str, args: dict[str, Any]) -> tuple[ToolResult, int]:

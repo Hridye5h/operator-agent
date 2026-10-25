@@ -3,14 +3,14 @@
 Two providers:
 
 * ``GeminiPlanner``   - real reasoning via google-genai.
-* ``ScriptedPlanner`` - a deterministic rule-based planner used when no API key
+* ``ScriptedPlanner`` - a deterministic procedure executor used when no API key
   is configured, and in tests.
 
 The scripted planner exists so the agent loop, the tools, the recovery paths and
 the verification step can all be exercised and tested without a network call.
-It is genuinely planning over the same observation buffer and the same tool
-registry; it just reasons with rules instead of a model. Every step it takes is
-still decided at runtime from what it has observed.
+It executes the company procedure the agent selected, over the same observation
+buffer and the same tool registry, and contains no task-specific names; every
+step it takes is decided at runtime from what it has observed.
 """
 
 from __future__ import annotations
@@ -147,11 +147,18 @@ class GeminiPlanner:
 
 
 class ScriptedPlanner:
-    """Deterministic fallback planner.
+    """Deterministic planner: executes the company procedure in the context.
 
-    Reasons over the same observation buffer the LLM sees. It is not a recorded
-    script: it inspects what has actually happened so far and picks the next
-    action, including the recovery and escalation branches.
+    It knows the *shape* of a procedure — discover, read, write, verify — and
+    nothing about any particular task. Which tool fills each role comes from the
+    procedure; which document to read comes from matching the goal against what
+    discovery actually returned. It is not a recorded script: every branch is
+    taken at runtime from what has been observed, including recovering from a
+    transient failure, confirming instead of re-entering when the record already
+    exists, and escalating when the source contradicts itself.
+
+    It reasons with rules instead of a model, and it only covers documented
+    procedures. A request with no matching procedure needs the LLM planner.
     """
 
     name = "scripted"
@@ -159,73 +166,74 @@ class ScriptedPlanner:
     # Pulled out so the agent can tell the operator why it is running offline.
     reason = "no GEMINI_API_KEY configured — using deterministic planner"
 
+    human = "ask_human"
+
     def decide(self, system: str, context: str) -> Decision:
+        roles = _procedure_roles(context)
+        if not {"read", "write", "verify"} <= roles.keys():
+            raise ValueError("no company procedure in context; the deterministic "
+                             "planner only executes documented procedures")
+        D, R, W, V = (roles.get("discover"), roles["read"], roles["write"],
+                      roles["verify"])
+        ask = self.human
+
         # Only the HISTORY section counts as "what has happened". The tool
-        # catalogue earlier in the prompt also contains every tool name, so
-        # matching against the whole context would mark every step as done
-        # before the agent had taken any.
-        c = context.split("HISTORY:", 1)[1] if "HISTORY:" in context else ""
-        seen = lambda s: s in c  # noqa: E731
+        # catalogue and the procedure earlier in the prompt mention every tool
+        # name, so matching the whole context would mark every step as done.
+        history = context.split("HISTORY:", 1)[1] if "HISTORY:" in context else ""
+        seen = lambda s: s in history  # noqa: E731
 
-        # 1. Locate candidate documents.
-        if not seen("list_invoices("):
-            return Decision("list_invoices", {}, "Need to see what documents exist.")
+        # 1. Discover what exists.
+        if D and not seen(f"{D}("):
+            return Decision(D, {}, "See which documents exist.")
 
-        # 2. Read the document the goal points at: an explicit invoice number if
-        #    the request names one, otherwise the newest for that vendor.
-        if not seen("read_invoice("):
-            number = _invoice_number_from_goal(context)
-            if number:
-                return Decision("read_invoice", {"invoice_number": number},
-                                f"The request names invoice {number}.")
-            vendor = _vendor_from_goal(context)
+        # 2. Read the document the request refers to.
+        if not seen(f"{R}("):
+            chosen = _pick_document(_goal(context), history)
+            if chosen is None:
+                return Decision(ask, {"question": "I could not tell which document this "
+                                                  "request refers to. Which one should I use?"},
+                                "No document clearly matches the request.", confidence=0.2)
+            return Decision(R, {"file": chosen}, f"The request points at {chosen}.")
+
+        # 3. A contested value is never chosen here. Ask once.
+        contested = _contested_field(history)
+        if contested and not seen(f"{ask}("):
             return Decision(
-                "read_invoice",
-                {"vendor": vendor, "latest": True},
-                f"Read the most recent {vendor or 'matching'} invoice.",
-            )
-
-        # 3. If the document is internally inconsistent, ask rather than guess.
-        if seen("AMBIGUITY") and not seen("ask_human("):
-            return Decision(
-                "ask_human",
-                {"question": "This invoice shows two conflicting payable amounts. "
-                             "Which should be recorded?",
+                ask,
+                {"question": f"The document gives conflicting values for '{contested}'. "
+                             f"Which should be used?",
                  "options_from_observation": True},
-                "Two contradictory totals; guessing here would corrupt the ledger.",
+                "The source contradicts itself; choosing would be a guess.",
                 confidence=0.2,
             )
 
-        # 4. Enter the record through the browser.
-        if not seen("submit_payable("):
-            return Decision("submit_payable", {"use_extracted": True},
-                            "Enter the payable into the internal system.")
+        # 4. Write.
+        if not seen(f"{W}("):
+            return Decision(W, {"use_extracted": True},
+                            "Enter the record into the system of record.")
 
-        # 5. React to how the last submission actually went.
-        #    Everything after the final "submit_payable(" is that attempt's
-        #    outcome, which is more reliable than comparing index positions.
-        # A failed submission stays in the history for the rest of the run, so
-        # once verification has succeeded these recovery branches must stop
-        # firing or the agent will keep reacting to an error it already resolved.
-        last_submit = c.rfind("submit_payable(")
-        if last_submit != -1 and "VERIFIED" not in c:
-            outcome = c[last_submit:]
+        # 5. React to how the last write went. A failure stays in the history for
+        #    the rest of the run, so once verification has succeeded these
+        #    branches must go quiet or the agent keeps reacting to a resolved error.
+        last_write = history.rfind(f"{W}(")
+        if last_write != -1 and "VERIFIED" not in history:
+            outcome = history[last_write:]
 
-            # Already on file: the work is done, so confirm rather than re-enter.
-            if "VAL-006" in outcome or "already recorded" in outcome:
-                return Decision("verify_payable", {"use_extracted": True},
-                                "Already recorded; confirming the existing record "
-                                "instead of entering a duplicate.")
+            # Already exists: the work is done, so confirm rather than re-enter.
+            if "ERROR (conflict)" in outcome:
+                return Decision(V, {}, "Already on file; confirming the existing record "
+                                       "instead of entering a duplicate.")
 
             # Temporary fault: the same call is worth repeating, within reason.
-            if "ERROR (retriable)" in outcome and c.count("submit_payable(") < 4:
-                return Decision("submit_payable", {"use_extracted": True, "retry": True},
-                                "Previous submission failed transiently; retrying.")
+            if "ERROR (retriable)" in outcome and history.count(f"{W}(") < 4:
+                return Decision(W, {"use_extracted": True, "retry": True},
+                                "Previous attempt failed transiently; retrying.")
 
             # Input rejected: repeating it unchanged cannot help.
-            if "ERROR (permanent)" in outcome and not seen("ask_human("):
+            if "ERROR (permanent)" in outcome and not seen(f"{ask}("):
                 return Decision(
-                    "ask_human",
+                    ask,
                     {"question": "The system rejected this submission and retrying "
                                  "unchanged will not help. How should I proceed?"},
                     "Permanent rejection needs a human decision.",
@@ -233,28 +241,76 @@ class ScriptedPlanner:
                 )
 
         # 6. Verify by reading back from the system of record.
-        if not seen("verify_payable("):
-            return Decision("verify_payable", {"use_extracted": True},
-                            "Confirm the record actually landed and matches.")
+        if not seen(f"{V}("):
+            return Decision(V, {}, "Confirm the record landed and matches what was sent.")
 
         return Decision("finish", {}, "Outcome verified.")
 
 
-def _invoice_number_from_goal(context: str) -> str:
-    """Pick an explicit document reference out of the request, if it names one."""
+def _goal(context: str) -> str:
     m = re.search(r"GOAL:\s*(.+)", context)
-    goal = m.group(1) if m else context
-    hit = re.search(r"\b([A-Z]{2}-[A-Z0-9]{2,}(?:-[A-Z0-9]+)*)\b", goal)
-    return hit.group(1) if hit else ""
+    return m.group(1) if m else ""
 
 
-def _vendor_from_goal(context: str) -> str:
-    m = re.search(r"GOAL:\s*(.+)", context)
-    goal = m.group(1) if m else context
-    for name in ("Northwind", "Globex", "Initech"):
-        if name.lower() in goal.lower():
-            return name
-    return ""
+def _procedure_roles(context: str) -> dict[str, str]:
+    m = re.search(r"Steps:\s*(.+)", context)
+    if not m:
+        return {}
+    roles = {}
+    for part in m.group(1).split("->"):
+        if "=" in part:
+            role, tool = part.split("=", 1)
+            roles[role.strip()] = tool.strip()
+    return roles
+
+
+def _contested_field(history: str) -> str | None:
+    m = re.search(r"CONTESTED \((\w+)\)", history)
+    return m.group(1) if m else None
+
+
+_RECENCY_LATEST = ("latest", "newest", "most recent")
+_RECENCY_OLDEST = ("oldest", "earliest")
+
+
+def _pick_document(goal: str, listing: str) -> str | None:
+    """Choose the document a request refers to, from what discovery returned.
+
+    Scores each listed document by the distinctive words of the goal it
+    contains, with an exact reference (an invoice number or a GSTIN named in the
+    goal) outranking everything. Ties are broken by recency only when the goal
+    asks for one; otherwise a tie means the request is ambiguous and the answer
+    is None, so the agent asks rather than picks.
+    """
+    rows = re.findall(r"^\s+(\S+\.pdf)\s*\|\s*(.+)$", listing, re.M)
+    if not rows:
+        return None
+
+    lowered = goal.lower()
+    words = set(re.findall(r"[a-z][a-z0-9]{3,}", lowered))
+    references = set(re.findall(r"\b[A-Z]{2}-[A-Z0-9]{2,}(?:-[A-Z0-9]+)*\b"
+                                r"|\b\d{2}[A-Z]{5}\d{4}[A-Z0-9]{3}\b", goal))
+
+    scored = []
+    for file, rest in rows:
+        text = f"{file} {rest}"
+        score = sum(1 for w in words if w in text.lower())
+        if any(r in text for r in references):
+            score += 100
+        dates = re.findall(r"\d{4}-\d{2}-\d{2}", rest)
+        scored.append((score, dates[-1] if dates else "", file))
+
+    best = max(s for s, _, _ in scored)
+    if best == 0:
+        return None
+    top = [(d, f) for s, d, f in scored if s == best]
+    if len(top) == 1:
+        return top[0][1]
+    if any(k in lowered for k in _RECENCY_LATEST):
+        return max(top)[1]
+    if any(k in lowered for k in _RECENCY_OLDEST):
+        return min(top)[1]
+    return None
 
 
 def build_planner(prefer: str = "auto") -> tuple[Planner, str | None]:

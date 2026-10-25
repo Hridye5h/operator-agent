@@ -1,0 +1,5 @@
+Ground truth for the mock vendor corpus (for grading the agent, not read by it)
+==============================================================================
+zenith_components_registration.pdf  Zenith Components Pvt Ltd  29AAACZ1234F1Z5  acct 50200012345678
+orbit_logistics_registration.pdf  Orbit Logistics LLP  27AAFCO5678K1Z3  acct 918020004561237  <-- CONTESTED bank_account (form 918020004561237 vs email 30481122334455)
+kestrel_analytics_registration.pdf  Kestrel Analytics Pvt Ltd  07AACCK9012M1Z8  acct 001122334455

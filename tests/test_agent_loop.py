@@ -43,11 +43,41 @@ def trace(tmp_path):
     return Trace("test goal", root=tmp_path)
 
 
+# Binding is driven by each tool's declared parameters, so stubs that take part
+# in binding declare the same schema the real tools do.
+def _props(*names):
+    return {"type": "object", "properties": {n: {"type": "string"} for n in names}}
+
+
+SCHEMAS = {
+    "read_invoice": _props("file", "invoice_number", "vendor", "latest"),
+    "submit_payable": _props("vendor", "invoice_number", "amount", "due_date"),
+    "verify_payable": _props("invoice_number", "expect_vendor", "expect_amount",
+                             "expect_due_date"),
+    "ask_human": _props("question", "options"),
+}
+
+
 def make_registry(**tools):
     reg = ToolRegistry()
     for name, fn in tools.items():
-        reg.tool(name, f"stub {name}", {"type": "object", "properties": {}})(fn)
+        reg.tool(name, f"stub {name}",
+                 SCHEMAS.get(name, {"type": "object", "properties": {}}))(fn)
     return reg
+
+
+def contested_invoice():
+    """A reader result whose amount the document itself contradicts."""
+    return {
+        "fields": {"vendor": "Globex", "invoice_number": "GX-2",
+                   "due_date": "2026-09-10", "amount": None},
+        "contested": {
+            "field": "amount",
+            "message": "AMBIGUITY: two totals",
+            "candidates": [{"label": "printed total", "value": "118590.00"},
+                           {"label": "amended total", "value": "96400.00"}],
+        },
+    }
 
 
 # -- verification is mandatory ---------------------------------------------
@@ -220,12 +250,12 @@ def test_extracted_values_bind_into_later_calls(trace):
     captured = {}
 
     def read_invoice(**kwargs):
-        return ToolResult(True, data={
+        return ToolResult(True, data={"fields": {
             "vendor": "Globex Industries",
             "invoice_number": "GX-1",
             "due_date": "2026-09-10",
-            "amount": 96400.0,
-        }, display="read ok")
+            "amount": "96400.00",
+        }}, display="read ok")
 
     def submit_payable(**kwargs):
         captured.update(kwargs)
@@ -247,7 +277,7 @@ def test_extracted_values_bind_into_later_calls(trace):
     agent.run("do the thing", trace)
 
     assert captured["invoice_number"] == "GX-1"
-    assert captured["amount"] == "96400.00"      # normalised for the strict form
+    assert captured["amount"] == "96400.00"      # exactly as the reader established it
     assert captured["due_date"] == "2026-09-10"
 
 
@@ -255,12 +285,8 @@ def test_human_answer_overrides_unresolved_amount(trace):
     captured = {}
 
     reg = make_registry(
-        read_invoice=lambda **k: ToolResult(True, data={
-            "vendor": "Globex", "invoice_number": "GX-2", "due_date": "2026-09-10",
-            "amount": None, "ambiguity": "AMBIGUITY: two totals",
-            "amount_candidates": [{"label": "printed", "value": 118590.0},
-                                  {"label": "amended", "value": 96400.0}],
-        }, display="AMBIGUITY: two totals"),
+        read_invoice=lambda **k: ToolResult(True, data=contested_invoice(),
+                                            display="CONTESTED (amount): two totals"),
         ask_human=lambda **k: ToolResult(True, data={"answer": "amended total: 96400.00"},
                                          display="human answered"),
         submit_payable=lambda **k: (captured.update(k), ToolResult(
@@ -480,11 +506,8 @@ def test_unhelpful_answer_does_not_produce_a_write(trace):
     written = []
 
     reg = make_registry(
-        read_invoice=lambda **k: ToolResult(True, data={
-            "vendor": "Globex", "invoice_number": "GX-2", "due_date": "2026-09-10",
-            "amount": None, "ambiguity": "AMBIGUITY: two totals",
-            "amount_candidates": CANDIDATES,
-        }, display="AMBIGUITY: two totals"),
+        read_invoice=lambda **k: ToolResult(True, data=contested_invoice(),
+                                            display="CONTESTED (amount): two totals"),
         ask_human=lambda **k: ToolResult(True, data={"answer": "see the email from 15 March"},
                                          display="human answered"),
         submit_payable=lambda **k: (written.append(k),
@@ -512,11 +535,8 @@ def test_a_resolving_answer_does_produce_the_right_write(trace):
     written = []
 
     reg = make_registry(
-        read_invoice=lambda **k: ToolResult(True, data={
-            "vendor": "Globex", "invoice_number": "GX-2", "due_date": "2026-09-10",
-            "amount": None, "ambiguity": "AMBIGUITY: two totals",
-            "amount_candidates": CANDIDATES,
-        }, display="AMBIGUITY: two totals"),
+        read_invoice=lambda **k: ToolResult(True, data=contested_invoice(),
+                                            display="CONTESTED (amount): two totals"),
         ask_human=lambda **k: ToolResult(True, data={"answer": "use the amended one"},
                                          display="human answered"),
         submit_payable=lambda **k: (written.append(k),

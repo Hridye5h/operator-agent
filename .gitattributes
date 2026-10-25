@@ -1,0 +1,7 @@
+# Generated documents and captured evidence are binary. Without this, git's
+# line-ending conversion on a Windows checkout rewrites every LF in a PDF to CRLF
+# and breaks its internal byte offsets ("incorrect startxref pointer").
+*.pdf   binary
+*.png   binary
+*.webm  binary
+*.db    binary

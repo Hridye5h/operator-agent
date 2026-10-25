@@ -2,8 +2,11 @@
 """Entry point: wire up tools, start the environment, run one goal.
 
     python run_agent.py --scenario happy
-    python run_agent.py --scenario ambiguous --answer "use the amended total 96400"
+    python run_agent.py --scenario supplier
     python run_agent.py --goal "Record the latest Initech invoice in the AP system."
+
+One agent, one tool registry, every procedure the company has. The goal decides
+which procedure applies; nothing here is specific to a single task.
 """
 
 from __future__ import annotations
@@ -13,19 +16,22 @@ import os
 import pathlib
 import subprocess
 import sys
-import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from agent.core import Agent, AgentConfig  # noqa: E402
 from agent.llm import build_planner  # noqa: E402
+from agent.procedures import check_procedure, load_procedures, select_procedure  # noqa: E402
 from agent.tools import ToolRegistry  # noqa: E402
 from agent.trace import Trace  # noqa: E402
 from tools import browser as browser_tools  # noqa: E402
 from tools.files import list_invoices, read_invoice  # noqa: E402
 from tools.human import HumanChannel  # noqa: E402
+from tools.vendor_forms import list_vendor_forms, read_vendor_form  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent
+PROCEDURES = ROOT / "company" / "procedures"
+
 
 def value_threshold_policy(limit: float):
     """Require human approval before recording a payable above ``limit``.
@@ -48,23 +54,22 @@ def value_threshold_policy(limit: float):
     return policy
 
 
+INVOICE_GOAL = ("Find the latest invoice from {vendor}, extract the amount and due "
+                "date, record it as a payable in the internal AP system, and confirm "
+                "it was stored correctly.")
+
 SCENARIOS = {
+    # --- Accounts Payable ---------------------------------------------------
     "happy": {
-        "goal": "Find the latest invoice from Northwind Traders, extract the amount "
-                "and due date, record it as a payable in the internal AP system, and "
-                "confirm it was stored correctly.",
+        "goal": INVOICE_GOAL.format(vendor="Northwind Traders"),
         "answers": {},
     },
     "ambiguous": {
-        "goal": "Find the latest invoice from Globex Industries, extract the amount "
-                "and due date, record it as a payable in the internal AP system, and "
-                "confirm it was stored correctly.",
+        "goal": INVOICE_GOAL.format(vendor="Globex Industries"),
         "answers": {"amount": "96400.00"},
     },
     "no_human": {
-        "goal": "Find the latest invoice from Globex Industries, extract the amount "
-                "and due date, record it as a payable in the internal AP system, and "
-                "confirm it was stored correctly.",
+        "goal": INVOICE_GOAL.format(vendor="Globex Industries"),
         "answers": None,     # nobody available -> must stop safely
     },
     # Over the auto-approval limit: the agent must get sign-off before writing.
@@ -82,11 +87,29 @@ SCENARIOS = {
     # Runs the same task twice in one process: the second pass must recognise the
     # work is already done and confirm it rather than entering a duplicate.
     "duplicate": {
-        "goal": "Find the latest invoice from Northwind Traders, extract the amount "
-                "and due date, record it as a payable in the internal AP system, and "
-                "confirm it was stored correctly.",
+        "goal": INVOICE_GOAL.format(vendor="Northwind Traders"),
         "answers": {},
         "repeat": 2,
+    },
+
+    # --- Vendor Master: a different task on the same agent -------------------
+    "supplier": {
+        "goal": "Onboard Zenith Components as a new supplier: register them in the "
+                "Vendor Master from their registration form and confirm the record.",
+        "answers": {},
+    },
+    # The form's bank account disagrees with a change that arrived by email — the
+    # standard payment-fraud pattern. The person confirms the signed-form account.
+    "supplier_fraud_check": {
+        "goal": "Onboard Orbit Logistics as a new supplier: register them in the "
+                "Vendor Master from their registration form and confirm the record.",
+        "answers": {"bank_account": "918020004561237"},
+    },
+    # Same, with nobody to ask: no vendor may be created with either account.
+    "supplier_no_human": {
+        "goal": "Onboard Orbit Logistics as a new supplier: register them in the "
+                "Vendor Master from their registration form and confirm the record.",
+        "answers": None,
     },
 }
 
@@ -111,29 +134,34 @@ def start_environment(reset: bool = True) -> subprocess.Popen:
 
 def build_registry(session: browser_tools.BrowserSession,
                    human: HumanChannel) -> ToolRegistry:
+    """Every capability the company has given the operator, with its role."""
     reg = ToolRegistry()
-    submit_payable, verify_payable, open_page = browser_tools.make_tools(session)
+    web = browser_tools.make_tools(session)
 
+    # -- Accounts Payable ------------------------------------------------
     reg.tool(
         "list_invoices",
         "List available invoice documents with vendor, number and issue date.",
         {"type": "object",
          "properties": {"vendor": {"type": "string", "description": "optional filter"}},
          "required": []},
+        kind="discover",
     )(list_invoices)
 
     reg.tool(
         "read_invoice",
         "Extract vendor, invoice number, due date and amount from one invoice. "
-        "Select by file, or by vendor with latest=true. Reports an ambiguity "
-        "instead of guessing when the document states conflicting amounts.",
+        "Select by file, by invoice number, or by vendor with latest=true. Reports "
+        "a contested amount instead of guessing when the document contradicts itself.",
         {"type": "object",
          "properties": {
              "file": {"type": "string"},
+             "invoice_number": {"type": "string"},
              "vendor": {"type": "string"},
              "latest": {"type": "boolean"},
          },
          "required": []},
+        kind="read",
     )(read_invoice)
 
     reg.tool(
@@ -148,27 +176,86 @@ def build_registry(session: browser_tools.BrowserSession,
              "due_date": {"type": "string"},
          },
          "required": ["vendor", "invoice_number", "amount", "due_date"]},
-        requires_approval=False,
-    )(submit_payable)
+        kind="write",
+    )(web["submit_payable"])
 
     reg.tool(
         "verify_payable",
-        "Read a payable back from the system of record and compare it against the "
-        "expected amount and due date. Required before finishing.",
+        "Read a payable back from the system of record and compare it with what "
+        "was written. Required before finishing.",
         {"type": "object",
          "properties": {
              "invoice_number": {"type": "string"},
+             "expect_vendor": {"type": "string"},
              "expect_amount": {"type": "string"},
              "expect_due_date": {"type": "string"},
          },
          "required": ["invoice_number"]},
-    )(verify_payable)
+        kind="verify",
+    )(web["verify_payable"])
+
+    # -- Vendor Master ---------------------------------------------------
+    reg.tool(
+        "list_vendor_forms",
+        "List supplier registration forms with legal name, GSTIN and submission date.",
+        {"type": "object",
+         "properties": {"name": {"type": "string", "description": "optional filter"}},
+         "required": []},
+        kind="discover",
+    )(list_vendor_forms)
 
     reg.tool(
+        "read_vendor_form",
+        "Extract legal name, GSTIN, PAN, bank account, IFSC and contact email from "
+        "one supplier registration form. Reports a contested bank account rather "
+        "than choosing when the form and a later change disagree.",
+        {"type": "object",
+         "properties": {"file": {"type": "string"}, "legal_name": {"type": "string"}},
+         "required": []},
+        kind="read",
+    )(read_vendor_form)
+
+    reg.tool(
+        "register_vendor",
+        "Register a supplier in the Vendor Master by filling its web form.",
+        {"type": "object",
+         "properties": {
+             "legal_name": {"type": "string"},
+             "gstin": {"type": "string"},
+             "pan": {"type": "string"},
+             "bank_account": {"type": "string"},
+             "ifsc": {"type": "string"},
+             "contact_email": {"type": "string"},
+         },
+         "required": ["legal_name", "gstin", "pan", "bank_account", "ifsc",
+                      "contact_email"]},
+        kind="write",
+    )(web["register_vendor"])
+
+    reg.tool(
+        "verify_vendor",
+        "Read a vendor back from the Vendor Master by GSTIN and compare it with "
+        "what was written. Required before finishing.",
+        {"type": "object",
+         "properties": {
+             "gstin": {"type": "string"},
+             "expect_legal_name": {"type": "string"},
+             "expect_pan": {"type": "string"},
+             "expect_bank_account": {"type": "string"},
+             "expect_ifsc": {"type": "string"},
+             "expect_contact_email": {"type": "string"},
+         },
+         "required": ["gstin"]},
+        kind="verify",
+    )(web["verify_vendor"])
+
+    # -- general ---------------------------------------------------------
+    reg.tool(
         "open_page",
-        "Open a page in the internal system and read its visible text.",
+        "Open a page in the internal systems and read its visible text.",
         {"type": "object", "properties": {"path": {"type": "string"}}, "required": []},
-    )(open_page)
+        kind="other",
+    )(web["open_page"])
 
     reg.tool(
         "ask_human",
@@ -180,6 +267,7 @@ def build_registry(session: browser_tools.BrowserSession,
              "options": {"type": "array", "items": {"type": "string"}},
          },
          "required": ["question"]},
+        kind="ask",
     )(human.ask)
 
     return reg
@@ -194,6 +282,8 @@ def main() -> int:
                     help="prompt on the console when the agent escalates")
     ap.add_argument("--planner", choices=["auto", "gemini", "scripted"], default="auto")
     ap.add_argument("--headed", action="store_true", help="show the browser window")
+    ap.add_argument("--record-video", action="store_true",
+                    help="record the browser session into the run's artifacts")
     ap.add_argument("--max-steps", type=int, default=14)
     ap.add_argument("--approval-limit", type=float, default=100000.0,
                     help="payables above this need human approval (0 disables)")
@@ -213,6 +303,7 @@ def main() -> int:
     planner, note = build_planner(args.planner)
     policy = value_threshold_policy(args.approval_limit) if args.approval_limit > 0 else None
     passes = int(scenario.get("repeat", 1))
+    procedure = select_procedure(goal, load_procedures(PROCEDURES))
 
     proc = start_environment()
     results = []
@@ -230,17 +321,29 @@ def main() -> int:
                   f"|  planner={planner.name}{label}")
             print("-" * 72)
 
-            session = browser_tools.BrowserSession(headless=not args.headed,
-                                                   artifacts=trace.artifacts_dir)
+            session = browser_tools.BrowserSession(
+                headless=not args.headed, artifacts=trace.artifacts_dir,
+                video_dir=trace.artifacts_dir if args.record_video else None)
             human = HumanChannel(interactive=interactive, preset=preset or {})
             try:
                 session.start()
                 registry = build_registry(session, human)
+                if procedure is None:
+                    trace.add("plan", "no company procedure matches this request; "
+                                      "the planner works from the goal alone")
+                else:
+                    for problem in check_procedure(procedure, registry):
+                        trace.add("error", f"procedure {procedure['name']}: {problem}")
                 agent = Agent(planner, registry,
                               AgentConfig(max_steps=args.max_steps, approval_policy=policy))
-                result = agent.run(goal, trace)
+                result = agent.run(goal, trace, procedure=procedure)
             finally:
                 session.stop()
+
+            if session.video_path and session.video_path.exists():
+                final = trace.artifacts_dir / "run.webm"
+                session.video_path.replace(final)
+                trace.add("plan", "browser session recorded", artifacts=[final.name])
 
             report = trace.write_markdown()
             results.append(result)
@@ -251,6 +354,10 @@ def main() -> int:
             print(f"summary  : {result.summary}")
             if result.evidence:
                 print(f"evidence : {result.evidence}")
+            checks = [s.detail for s in trace.steps if s.kind == "verification"
+                      and s.detail.get("verified_fields")]
+            if checks:
+                print(f"compared : {', '.join(checks[-1]['verified_fields'])}")
             if human.asked:
                 print(f"escalations: {len(human.asked)}")
             print(f"trace    : {trace.dir / 'trace.json'}")

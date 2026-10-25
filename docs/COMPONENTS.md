@@ -55,9 +55,11 @@ system" is `mockenv/internal_app`, written for this project.
 | Tool registry and `ToolResult` contract | Written for this project (`agent/tools.py`) |
 | Planners, JSON extraction from model output | Written for this project (`agent/llm.py`) |
 | Run trace and report generation | Written for this project (`agent/trace.py`) |
-| Document extraction, ambiguity detection | Written for this project (`tools/files.py`) |
-| Browser tool, error classification, read-back verification | Written for this project (`tools/browser.py`) |
-| Mock internal system, invoice corpus | Written for this project (`mockenv/`) |
+| Procedure loading, selection and checking | Written for this project (`agent/procedures.py`) |
+| Company procedures | Written for this project (`company/procedures/*.json`) |
+| Invoice and supplier-form extraction, contested-field detection | Written for this project (`tools/files.py`, `tools/vendor_forms.py`) |
+| Label-based browser perception, error classification, read-back verification, video | Written for this project (`tools/browser.py`) |
+| Mock internal systems (Accounts Payable, Vendor Master), document corpora | Written for this project (`mockenv/`) |
 | Run viewer (the live demo page) | Written for this project (`docs/index.html`), plain HTML/CSS/JS, no framework |
 
 **No agent framework is used.** LangGraph, LangChain, CrewAI and similar were
@@ -79,8 +81,8 @@ permits. The architecture, the design decisions recorded in `DECISIONS.md`, and
 the defects described below were worked through directly, and I can walk through,
 debug or extend any part of the system.
 
-Three defects found and fixed during development, as examples of what that work
-looked like:
+Defects found and fixed during development, as examples of what that work looked
+like:
 
 - A human's free-text reply to an escalation was scanned for the first number it
   contained, so "see the email from 15 March" became a payable of 15.00. This
@@ -89,6 +91,10 @@ looked like:
   name one of the amounts in question.
 - `Tool.requires_approval` was declared and advertised to the planner but never
   enforced by the loop — a safety control that did not exist.
+- "Refuses to guess" was enforced only by the deterministic planner's rules. A
+  planner that ignored the ambiguity got its guess written, and verification
+  then passed because it compared fewer fields than were written. Both are now
+  invariants of the loop.
 - A failed submission stays in the history for the rest of a run, so recovery
   branches kept firing after the goal had already been met, sending the agent
   into a verify loop until the step budget was exhausted.

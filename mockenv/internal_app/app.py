@@ -1,15 +1,24 @@
-"""Meridian AP — the mock 'internal company system'.
+"""Meridian Systems — the mock 'internal company systems'.
 
-Deliberately a real web app with a real HTML form rather than an API the agent
-could shortcut to. The agent has to drive it through a browser.
+Two systems, both real web apps with real HTML forms rather than APIs the agent
+could shortcut to. The agent has to drive them through a browser.
 
-Three failure modes are built in on purpose, so the agent's recovery behaviour
-is exercised rather than asserted:
+* **Accounts Payable** (``/``, ``/new``)          - record a vendor invoice
+* **Vendor Master** (``/vendors``, ``/vendors/new``) - register a supplier
 
-1. Strict amount format  - rejects "INR 73,219.00"; wants a bare decimal.
-2. Duplicate guard       - rejects an invoice number already on file.
+Failure modes are built in on purpose, so the agent's recovery behaviour is
+exercised rather than asserted:
+
+1. Strict input formats  - amounts must be bare decimals; GSTIN, PAN and IFSC
+                           must follow their official formats, and the PAN must
+                           match the one embedded in the GSTIN.
+2. Duplicate guards      - an invoice number or GSTIN already on file is refused.
 3. Transient outage      - the first submission of each process fails with a
                            503-style page when FAIL_FIRST_SUBMIT=1 (default on).
+
+Errors are rendered in a ``role="alert"`` region and confirmations in a
+``role="status"`` region, which is how the agent reads outcomes without relying
+on element ids.
 """
 
 from __future__ import annotations
@@ -31,6 +40,11 @@ templates = Jinja2Templates(directory=str(BASE / "templates"))
 
 AMOUNT_RE = re.compile(r"^\d+(\.\d{1,2})?$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+PAN_RE = re.compile(r"^[A-Z]{5}\d{4}[A-Z]$")
+IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
+ACCOUNT_RE = re.compile(r"^\d{9,18}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 _state = {"submit_attempts": 0}
 
@@ -66,6 +80,19 @@ def init_db(reset: bool = False) -> None:
                    amount         REAL NOT NULL,
                    due_date       TEXT NOT NULL,
                    entered_at     TEXT NOT NULL
+               )"""
+        )
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS vendors (
+                   id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                   code           TEXT NOT NULL UNIQUE,
+                   legal_name     TEXT NOT NULL,
+                   gstin          TEXT NOT NULL UNIQUE,
+                   pan            TEXT NOT NULL,
+                   bank_account   TEXT NOT NULL,
+                   ifsc           TEXT NOT NULL,
+                   contact_email  TEXT NOT NULL,
+                   registered_at  TEXT NOT NULL
                )"""
         )
         con.commit()
@@ -169,8 +196,16 @@ def create(
 
     return templates.TemplateResponse(
         request=request,
-        name="result.html",
-        context={"record_id": new_id, "values": values},
+        name="record.html",
+        context={
+            "title": "Payable recorded",
+            "banner": f"Payable #{new_id} created for {vendor.strip()}, "
+                      f"invoice {invoice_number.strip()}.",
+            "rows": [("Record ID", new_id), ("Vendor", vendor.strip()),
+                     ("Invoice", invoice_number.strip()), ("Amount", amount.strip()),
+                     ("Due date", due_date.strip())],
+            "back": "/",
+        },
     )
 
 
@@ -188,6 +223,114 @@ def api_payables(invoice_number: str | None = None):
             ).fetchall()
         else:
             rows = con.execute("SELECT * FROM payables ORDER BY id DESC").fetchall()
+    return {"count": len(rows), "records": [dict(r) for r in rows]}
+
+
+# ---------------------------------------------------------------------------
+# Vendor Master
+# ---------------------------------------------------------------------------
+
+VENDOR_FIELDS = ("legal_name", "gstin", "pan", "bank_account", "ifsc", "contact_email")
+
+
+@app.get("/vendors", response_class=HTMLResponse)
+def vendors_index(request: Request):
+    with closing(connect()) as con:
+        rows = con.execute("SELECT * FROM vendors ORDER BY id DESC").fetchall()
+    return templates.TemplateResponse(
+        request=request, name="vendors.html", context={"rows": rows}
+    )
+
+
+@app.get("/vendors/new", response_class=HTMLResponse)
+def vendor_form(request: Request):
+    return templates.TemplateResponse(
+        request=request, name="vendor_new.html", context={"error": None, "values": {}}
+    )
+
+
+@app.post("/vendors/new", response_class=HTMLResponse)
+def vendor_create(
+    request: Request,
+    legal_name: str = Form(""),
+    gstin: str = Form(""),
+    pan: str = Form(""),
+    bank_account: str = Form(""),
+    ifsc: str = Form(""),
+    contact_email: str = Form(""),
+):
+    values = {k: v.strip() for k, v in {
+        "legal_name": legal_name, "gstin": gstin, "pan": pan,
+        "bank_account": bank_account, "ifsc": ifsc, "contact_email": contact_email,
+    }.items()}
+    _state["submit_attempts"] += 1
+
+    def page(msg: str, status: int, transient: bool = False):
+        return templates.TemplateResponse(
+            request=request, name="vendor_new.html",
+            context={"error": msg, "values": values, "transient": transient},
+            status_code=status,
+        )
+
+    if fail_first_enabled() and _state["submit_attempts"] == 1:
+        return page("SYS-503: vendor service temporarily unavailable, "
+                    "please retry in a moment.", 503, transient=True)
+
+    if not values["legal_name"]:
+        return page("VND-001: Legal name is required.", 400)
+    if not GSTIN_RE.match(values["gstin"]):
+        return page("VND-002: GSTIN must be 15 characters in the standard format "
+                    "(e.g. 29AAACZ1234F1Z5).", 400)
+    if not PAN_RE.match(values["pan"]):
+        return page("VND-003: PAN must be 10 characters (e.g. AAACZ1234F).", 400)
+    if values["gstin"][2:12] != values["pan"]:
+        return page("VND-004: PAN does not match the PAN embedded in the GSTIN.", 400)
+    if not ACCOUNT_RE.match(values["bank_account"]):
+        return page("VND-005: Bank account number must be 9 to 18 digits.", 400)
+    if not IFSC_RE.match(values["ifsc"]):
+        return page("VND-006: IFSC must be 11 characters (e.g. HDFC0001234).", 400)
+    if not EMAIL_RE.match(values["contact_email"]):
+        return page("VND-007: Contact email is not a valid address.", 400)
+
+    with closing(connect()) as con:
+        dup = con.execute("SELECT code FROM vendors WHERE gstin = ?",
+                          (values["gstin"],)).fetchone()
+        if dup:
+            return page(f"VND-409: A vendor with GSTIN {values['gstin']} is already "
+                        f"registered (vendor {dup['code']}).", 409)
+        count = con.execute("SELECT COUNT(*) AS n FROM vendors").fetchone()["n"]
+        code = f"V-{count + 1:04d}"
+        con.execute(
+            "INSERT INTO vendors (code, legal_name, gstin, pan, bank_account, ifsc, "
+            "contact_email, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (code, *(values[f] for f in VENDOR_FIELDS),
+             datetime.now().isoformat(timespec="seconds")),
+        )
+        con.commit()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="record.html",
+        context={
+            "title": "Vendor registered",
+            "banner": f"Vendor {code} registered: {values['legal_name']}.",
+            "rows": [("Vendor code", code), ("Legal name", values["legal_name"]),
+                     ("GSTIN", values["gstin"]), ("PAN", values["pan"]),
+                     ("Bank account number", values["bank_account"]),
+                     ("IFSC", values["ifsc"]), ("Contact email", values["contact_email"])],
+            "back": "/vendors",
+        },
+    )
+
+
+@app.get("/api/vendors")
+def api_vendors(gstin: str | None = None):
+    """Read-only endpoint the agent uses to VERIFY a registration."""
+    with closing(connect()) as con:
+        if gstin:
+            rows = con.execute("SELECT * FROM vendors WHERE gstin = ?", (gstin,)).fetchall()
+        else:
+            rows = con.execute("SELECT * FROM vendors ORDER BY id DESC").fetchall()
     return {"count": len(rows), "records": [dict(r) for r in rows]}
 
 

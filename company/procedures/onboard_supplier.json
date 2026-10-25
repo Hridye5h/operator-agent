@@ -1,0 +1,16 @@
+{
+  "name": "onboard_supplier",
+  "purpose": "Register a new supplier in the Vendor Master from their signed registration form.",
+  "triggers": ["vendor", "supplier", "onboard", "vendor master"],
+  "steps": {
+    "discover": "list_vendor_forms",
+    "read": "read_vendor_form",
+    "write": "register_vendor",
+    "verify": "verify_vendor"
+  },
+  "rules": [
+    "Bank details come only from the signed registration form.",
+    "A bank-detail change received by email is a known fraud pattern: never apply it on your own; ask a person.",
+    "If the GSTIN is already registered, confirm the existing vendor instead of creating a duplicate."
+  ]
+}

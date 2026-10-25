@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Register vendor — Meridian Systems{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Register a vendor</h1>
+
+  {% if error %}
+  <div class="error" role="alert">{{ error }}</div>
+  {% if transient %}<p class="muted">This is a temporary condition; the submission can be retried.</p>{% endif %}
+  {% endif %}
+
+  <form method="post" action="/vendors/new">
+    <label for="legal_name">Legal name</label>
+    <input type="text" id="legal_name" name="legal_name" value="{{ values.get('legal_name','') }}" autocomplete="off">
+
+    <label for="gstin">GSTIN</label>
+    <input type="text" id="gstin" name="gstin" value="{{ values.get('gstin','') }}" autocomplete="off">
+    <p class="muted">15 characters, e.g. 29AAACZ1234F1Z5</p>
+
+    <label for="pan">PAN</label>
+    <input type="text" id="pan" name="pan" value="{{ values.get('pan','') }}" autocomplete="off">
+    <p class="muted">Must match the PAN inside the GSTIN</p>
+
+    <label for="bank_account">Bank account number</label>
+    <input type="text" id="bank_account" name="bank_account" value="{{ values.get('bank_account','') }}" autocomplete="off">
+
+    <label for="ifsc">IFSC</label>
+    <input type="text" id="ifsc" name="ifsc" value="{{ values.get('ifsc','') }}" autocomplete="off">
+
+    <label for="contact_email">Contact email</label>
+    <input type="text" id="contact_email" name="contact_email" value="{{ values.get('contact_email','') }}" autocomplete="off">
+
+    <button type="submit">Register vendor</button>
+  </form>
+</div>
+{% endblock %}

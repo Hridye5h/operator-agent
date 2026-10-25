@@ -5,7 +5,7 @@
   <h1>Record a payable</h1>
 
   {% if error %}
-  <div class="error" id="form-error">{{ error }}</div>
+  <div class="error" id="form-error" role="alert">{{ error }}</div>
   {% if transient %}<p class="muted">This is a temporary condition; the submission can be retried.</p>{% endif %}
   {% endif %}
 
