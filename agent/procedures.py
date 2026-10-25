@@ -40,8 +40,9 @@ def select_procedure(goal: str, procedures: list[dict[str, Any]]) -> dict[str, A
     lowered = goal.lower()
     scored = []
     for proc in procedures:
+        # A trigger matches its plain inflections: "invoices", "onboarding".
         score = sum(1 for t in proc.get("triggers", [])
-                    if re.search(rf"\b{re.escape(t.lower())}\b", lowered))
+                    if re.search(rf"\b{re.escape(t.lower())}(?:s|es|ing|ed)?\b", lowered))
         scored.append((score, proc))
     scored.sort(key=lambda s: s[0], reverse=True)
     if not scored or scored[0][0] == 0:

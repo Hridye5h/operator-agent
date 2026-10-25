@@ -600,3 +600,13 @@ def test_a_value_the_document_does_not_give_cannot_be_supplied(trace):
     run(Agent(planner, sourced_registry(written, {"nw": doc}), AgentConfig(max_steps=6)),
         "record it", trace)
     assert written == []
+
+
+@pytest.mark.parametrize("goal,expected", [
+    ("Record all Northwind invoices as payables and confirm them", "record_vendor_invoice"),
+    ("Onboarding Zenith Components into the vendor master, please", "onboard_supplier"),
+    ("Register two new suppliers from their forms", "onboard_supplier"),
+])
+def test_inflected_triggers_still_select_the_procedure(goal, expected):
+    procs = load_procedures(ROOT / "company" / "procedures")
+    assert select_procedure(goal, procs)["name"] == expected
