@@ -12,7 +12,7 @@ by a fixed list of fields. A reader returns ``fields``; a writer declares the
 fields it accepts; binding matches the two by name. So the loop carries no
 knowledge of any particular task, and a new task is new tools plus a goal.
 
-Four properties are enforced here rather than requested of the planner, because
+These properties are enforced here rather than requested of the planner, because
 prompts are advice and a weaker or misbehaving planner must not be able to get
 around them:
 
@@ -27,6 +27,10 @@ around them:
   that record may set the field — blank or with a value of the planner's own —
   and reading other documents does not clear it. Once resolved, a write to that
   record must carry exactly the value the human chose.
+* **What is written is what was read.** Every value a reader could have
+  supplied must agree with one document read in the run. Verification proves
+  the record matches the write; this proves the write matches a source, so a
+  mis-copied figure is refused rather than written and then verified.
 * **Failure is an observation.** Tools never raise into the loop; they return a
   result the planner can reason about, including whether a retry is sensible.
 """
@@ -36,6 +40,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Callable
 
 from agent.llm import Decision, Planner, UnusableReply
@@ -155,6 +160,7 @@ class Agent:
         evidence: dict[str, Any] = {}
         last_error: str | None = None
         writes: list[dict[str, Any]] = []       # every successful write, in order
+        reads: list[dict[str, Any]] = []        # the fields of every document read
         granted: set[str] = set()
         declined: dict[str, int] = {}
         stalls = 0
@@ -248,12 +254,13 @@ class Agent:
             args = self._bind(decision, tool, state, target)
 
             # --- guards -------------------------------------------------
-            blocked = self._contested_block(tool, args, state)
+            blocked = self._contested_block(tool, args, state) \
+                or self._provenance_block(tool, args, reads, state)
             if blocked:
                 stalls += 1
                 if stalls > 2:
-                    msg = ("a contested value is still unresolved and the planner "
-                           "kept trying to write anyway; stopping without writing.")
+                    msg = ("the planner kept proposing a write the loop refuses; "
+                           f"stopping without writing. Last refusal: {blocked}")
                     trace.add("escalation", msg)
                     trace.finish("escalated")
                     return RunResult("escalated", msg, False, {}, trace, step)
@@ -293,6 +300,9 @@ class Agent:
             if result.ok:
                 last_error = None
                 self._absorb(kind, result, state)
+                if kind == "read" and isinstance(result.data, dict) \
+                        and isinstance(result.data.get("fields"), dict):
+                    reads.append(dict(result.data["fields"]))
 
                 if kind == "write":
                     writes.append({"tool": decision.action, "args": dict(args),
@@ -353,6 +363,37 @@ class Agent:
                         f"'{name}' on this record, and this call would write "
                         f"{value or 'nothing'}.")
         return None
+
+    def _provenance_block(self, tool: Tool | None, args: dict[str, Any],
+                          reads: list[dict[str, Any]],
+                          state: dict[str, Any]) -> str | None:
+        """Refuse a write whose values no single document read in this run gives.
+
+        Only parameters some reader supplies are checked, and all of them must
+        agree with the same document, so a mis-copied figure, a value the
+        document does not give, and fields spliced from two documents are all
+        refused. A human's choice on a contested field stands in for the
+        document's value.
+        """
+        if tool is None or tool.kind != "write" or not reads:
+            return None
+        sourced = {k for r in reads for k in r}
+        claimed = {p: args[p] for p in tool.params
+                   if p in sourced and args.get(p) not in (None, "")}
+        if not claimed:
+            return None
+        closest: list[str] | None = None
+        for read in reads:
+            doc = _resolved(read, state.get("_contests", []))
+            misses = [f"{p}={v!r} (document: {doc.get(p)!r})"
+                      for p, v in claimed.items() if not _same_value(v, doc.get(p))]
+            if not misses:
+                return None
+            if closest is None or len(misses) < len(closest):
+                closest = misses
+        return (f"Refusing {tool.name}: no document read in this run gives "
+                f"{'; '.join(closest or [])}. Write what the document says, or ask a "
+                f"human.")
 
     # -- approval ----------------------------------------------------------
     def _approval_gate(self, action: str, args: dict[str, Any],
@@ -567,6 +608,32 @@ def _public(state: dict[str, Any], key: str) -> bool:
 def _identity(tool: Tool) -> list[str]:
     """A verify tool's non-expectation parameters: what names the record."""
     return [p for p in tool.params if not p.startswith("expect_")]
+
+
+def _resolved(read: dict[str, Any], contests: list[dict[str, Any]]) -> dict[str, Any]:
+    """A document's fields with any human resolution of its contests applied."""
+    doc = dict(read)
+    for c in contests:
+        if c["chosen"] is not None and c["field"] in doc and all(
+                str(doc.get(k) or "").strip() == v for k, v in c["key"].items()):
+            doc[c["field"]] = c["chosen"]
+    return doc
+
+
+_PLAIN_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _same_value(written: Any, source: Any) -> bool:
+    if source in (None, ""):
+        return False
+    a, b = str(written).strip(), str(source).strip()
+    if a == b:
+        return True
+    # Money may drop trailing zeros ("73219" for "73219.00"); an identifier may
+    # not lose leading ones, so only a source with a decimal point qualifies.
+    if "." in b and _PLAIN_NUMBER.fullmatch(a) and _PLAIN_NUMBER.fullmatch(b):
+        return Decimal(a) == Decimal(b)
+    return False
 
 
 def _same_record(key: dict[str, str], args: dict[str, Any], tool: Tool) -> bool:

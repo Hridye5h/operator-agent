@@ -233,7 +233,9 @@ def read_invoice(file: str = "", vendor: str = "", latest: bool = False,
                  invoice_number: str = "") -> ToolResult:
     """Extract fields from one invoice.
 
-    Selected by filename, by invoice number, or by vendor plus ``latest``.
+    Selected by filename, by invoice number, or by vendor plus ``latest``. If
+    several invoices match and ``latest`` is not set, the call is refused with
+    the candidates rather than answered with one of them.
     """
     path: pathlib.Path | None = None
 
@@ -260,7 +262,14 @@ def read_invoice(file: str = "", vendor: str = "", latest: bool = False,
         if not pool:
             return ToolResult(False, error=f"no invoices matched vendor {vendor!r}")
         pool.sort(key=lambda t: t[0])
-        path = pool[-1][1] if latest else pool[0][1]
+        if latest or len(pool) == 1:
+            path = pool[-1][1]
+        else:
+            names = ", ".join(p.name for _, p in pool)
+            return ToolResult(False, retriable=False, error_kind="invalid",
+                              error=f"{len(pool)} invoices match vendor {vendor!r} "
+                                    f"({names}); name one by file or invoice_number, "
+                                    f"or pass latest=true")
 
     parsed = parse_invoice(path)
     payload = parsed.to_dict()

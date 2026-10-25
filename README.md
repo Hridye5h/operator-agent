@@ -109,7 +109,7 @@ binds one to the other by name. It has no fixed list of fields and no tool names
 so a new task is new tools plus a goal. `tests/test_generalization.py` fails the
 build if a task name ever appears in the framework code.
 
-**Four guarantees live in the loop, not in the prompt.** Prompts are advice; a
+**Five guarantees live in the loop, not in the prompt.** Prompts are advice; a
 weaker or misbehaving planner must not be able to get around these:
 
 | Guarantee | What it stops |
@@ -117,6 +117,7 @@ weaker or misbehaving planner must not be able to get around these:
 | A run cannot finish until every record it wrote has been read back by a verify tool | reporting success on the strength of a success page, or after checking one record of a batch |
 | Verification compares every field that was actually written | a planner verifying less than it wrote |
 | A contested value cannot be written until a human resolves it — and then only as the value they chose | a planner — or a model — guessing between two figures, or reading another document to make the question go away |
+| What is written must match a document read in the run, field for field | a mis-copied figure being written, then verified against itself |
 | A declined action is never executed or re-asked | interrogating a person until they give in |
 
 **Company procedures are data.** How the organisation does each kind of request —
@@ -283,7 +284,7 @@ survive extraction, the form, the database and verification as a string.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 176 tests, a few seconds
+python -m pytest tests/ -q                # 185 tests, a few seconds
 python -m pytest tests/ -m integration    # + 7 runs against the real app and browser (~1 min)
 ```
 

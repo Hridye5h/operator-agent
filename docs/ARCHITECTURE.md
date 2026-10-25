@@ -56,7 +56,10 @@ args = bind(decision, tool, state, target)                         # schema-driv
 if tool.kind == "write" and a field it sets is contested on that   # gate 2
         record (unresolved, or not the value the human chose):
     refuse, tell the planner why, continue
-if approval required and not granted:                              # gate 3
+if tool.kind == "write" and no document read in this run gives     # gate 3
+        every value it sets that a reader supplies:
+    refuse, tell the planner which values and what the document says, continue
+if approval required and not granted:                              # gate 4
     ask; on decline remember it, never execute
 
 result = registry.invoke(...)          # never raises
@@ -84,30 +87,41 @@ that was actually written. There is no list of fields anywhere in the loop, whic
 is why a second task needed no changes to it. `test_framework_code_names_no_task`
 holds the framework to that.
 
-## The four guarantees
+## The five guarantees
 
 These are enforced in `core.py`, not requested in the prompt, so they hold for
 any planner — including a model that misbehaves:
 
-**1. No success without verification.** `finish` is refused until a verify-kind
-tool has succeeded. The refusal enters the history so the planner can adapt.
+**1. No success without verification.** `finish` is refused until every
+successful write has been read back by a verify-kind tool. The refusal names the
+unchecked writes and enters the history so the planner can adapt.
 
 **2. Verification covers what was written.** A verify tool's expectations come
-from the arguments of the write that happened, overriding whatever the planner
+from the arguments of the write it names, overriding whatever the planner
 passed. The trace records `verified_fields` and `unverifiable_fields`.
 
-**3. No guessing a contested value.** While a reader reports a field as
-contested, no write that sets it may run — blank or filled in. Only a human reply
-that names exactly one candidate clears it.
+**3. No guessing a contested value.** A contest belongs to the record it was
+read from and lasts the run. No write to that record may set the field — blank or
+filled in — until a human reply names exactly one candidate, and afterwards only
+with that value.
 
-**4. A refusal is final.** A declined action is never executed, the same person
-is never asked twice, and a planner that keeps proposing it is stopped.
+**4. What is written is what was read.** Every write value that some reader
+supplies must agree with one document read in the run — the same document for
+all of them. Verification proves the record matches the write; this proves the
+write matches a source. Money may drop trailing zeros; identifiers may not lose
+leading ones. A human's choice on a contested field counts as the document's
+value.
+
+**5. A refusal is final.** A declined action is never executed, the same person
+is never asked twice, and a planner that keeps proposing it is stopped. Only a
+plain yes approves.
 
 And one property, rather than a guard: **failure is an observation**.
 `ToolRegistry.invoke` catches everything and returns a `ToolResult` with
 `error_kind` — `transient` (retry it), `conflict` (it already exists; confirm it)
-or `invalid` (change the input). A planner reply that cannot be parsed is
-re-prompted with the parse error, the same way.
+or `invalid` (change the input). A planner reply that cannot be used is
+re-prompted with the reason, the same way; a planner that cannot answer at all
+ends the run.
 
 ## Company procedures
 

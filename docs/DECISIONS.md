@@ -444,3 +444,36 @@ be used". Re-prompting helps when a model answered with prose; it cannot help
 when the API refused, and the planner has already retried that internally.
 Unusable replies now raise `UnusableReply` and are re-prompted; anything else
 ends the run at once as "planner unavailable".
+
+---
+
+### 29. What is written must be what was read
+
+Verification proves the record matches the write. Nothing proved the write
+matched the document. A model that copied 73219.00 as 73291.00 would have had
+the wrong amount written, read back, compared with itself and reported as
+verified, which is the one failure the project exists to prevent.
+
+The loop now keeps the fields of every document read in the run. A write is
+refused unless one document gives every value the write sets that some reader
+supplies, compared as strings, except that a money value may drop trailing
+zeros. Values from two documents cannot be combined, a value the document does
+not give cannot be supplied, and the refusal names each mismatch and what the
+document says, so a model can correct itself. A human's choice on a contested
+field counts as the document's value; free-form guidance does not.
+
+Four of the seven new tests fail on the old loop; every recorded scenario passes
+unchanged, with no false refusals.
+
+**Rejected:** fuzzy matching. "Northwind traders" or "73,219" would be easy to
+accept, and each relaxation is a way for a wrong value through. The refusal
+says exactly what to write instead.
+
+---
+
+### 30. A reader does not pick between documents silently
+
+`read_invoice(vendor="Northwind")` returned the *oldest* of three invoices
+without saying so, and `read_vendor_form(legal_name="Pvt Ltd")` returned the
+first of two matches by filename. Both now refuse and list the candidates;
+`latest=true`, a file name or an invoice number selects one.

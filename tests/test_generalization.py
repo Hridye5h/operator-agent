@@ -496,3 +496,107 @@ def test_verifying_with_nothing_to_compare_is_not_a_verification(monkeypatch):
                              {"vendor": "", "amount": None}, describe=str)
     assert not result.ok
     assert "nothing to compare" in result.error
+
+
+# --------------------------------------------------------------------------
+# What is written must be what was read
+# --------------------------------------------------------------------------
+
+NW = {"vendor": "Northwind", "invoice_number": "NW-1", "due_date": "2026-07-22",
+      "amount": "73219.00"}
+GX_CLEAN = {"fields": {"vendor": "Globex", "invoice_number": "GX-1",
+                       "due_date": "2026-05-02", "amount": "126500.00"}}
+
+
+def sourced_registry(written, docs):
+    reg = ToolRegistry()
+    reg.tool("read_invoice", "r", props("file"), kind="read")(
+        lambda file="", **k: ToolResult(True, data=docs[file], display="ok"))
+    reg.tool("submit_payable", "w", props("vendor", "invoice_number", "amount", "due_date"),
+             kind="write")(
+        lambda **k: (written.append(k), ToolResult(True, data={"record_id": "1"}))[1])
+    reg.tool("verify_payable", "v",
+             props("invoice_number", "expect_vendor", "expect_amount", "expect_due_date"),
+             kind="verify")(lambda **k: ToolResult(True, data={"id": 1}, display="VERIFIED"))
+    reg.tool("ask_human", "a", props("question", "options"), kind="ask")(
+        lambda **k: ToolResult(False, error="NO_HUMAN_AVAILABLE", retriable=False))
+    return reg
+
+
+def write_then_finish(args):
+    return [Decision("submit_payable", args), Decision("verify_payable", {}),
+            Decision("finish", {})]
+
+
+def test_a_mis_copied_value_is_not_written_and_then_verified(trace):
+    """Verification compares the record with the write; this compares the write
+    with the document. A transposed figure used to be written and verified."""
+    written = []
+    planner = SequencePlanner([Decision("read_invoice", {"file": "nw"})]
+                              + [Decision("submit_payable", {**NW, "amount": "73291.00"})])
+    reg = sourced_registry(written, {"nw": CLEAN_READ})
+
+    result = run(Agent(planner, reg, AgentConfig(max_steps=8)), "record it", trace)
+
+    assert written == []
+    assert not result.ok
+    assert any("73219.00" in s.summary for s in trace.steps if s.kind == "decision")
+
+
+def test_values_copied_correctly_are_written(trace):
+    written = []
+    planner = SequencePlanner([Decision("read_invoice", {"file": "nw"})]
+                              + write_then_finish(NW))
+    result = run(Agent(planner, sourced_registry(written, {"nw": CLEAN_READ}),
+                       AgentConfig(max_steps=8)), "record it", trace)
+    assert written == [NW] and result.ok
+
+
+def test_a_money_value_may_drop_trailing_zeros(trace):
+    written = []
+    planner = SequencePlanner([Decision("read_invoice", {"file": "nw"})]
+                              + write_then_finish({**NW, "amount": "73219"}))
+    result = run(Agent(planner, sourced_registry(written, {"nw": CLEAN_READ}),
+                       AgentConfig(max_steps=8)), "record it", trace)
+    assert len(written) == 1 and result.ok
+
+
+def test_an_identifier_may_not_lose_leading_zeros(trace):
+    written = []
+    doc = {"fields": {**NW, "invoice_number": "0042"}}
+    planner = SequencePlanner([Decision("read_invoice", {"file": "nw"})]
+                              + [Decision("submit_payable", {**NW, "invoice_number": "42"})])
+    run(Agent(planner, sourced_registry(written, {"nw": doc}), AgentConfig(max_steps=6)),
+        "record it", trace)
+    assert written == []
+
+
+def test_any_document_read_in_the_run_is_a_source(trace):
+    written = []
+    planner = SequencePlanner([Decision("read_invoice", {"file": "nw"}),
+                               Decision("read_invoice", {"file": "gx"})]
+                              + write_then_finish(NW))
+    reg = sourced_registry(written, {"nw": CLEAN_READ, "gx": GX_CLEAN})
+    result = run(Agent(planner, reg, AgentConfig(max_steps=8)), "record it", trace)
+    assert written == [NW] and result.ok
+
+
+def test_values_from_two_documents_cannot_be_spliced(trace):
+    written = []
+    spliced = {**NW, "amount": "126500.00"}          # Northwind record, Globex amount
+    planner = SequencePlanner([Decision("read_invoice", {"file": "nw"}),
+                               Decision("read_invoice", {"file": "gx"}),
+                               Decision("submit_payable", spliced)])
+    reg = sourced_registry(written, {"nw": CLEAN_READ, "gx": GX_CLEAN})
+    run(Agent(planner, reg, AgentConfig(max_steps=8)), "record it", trace)
+    assert written == []
+
+
+def test_a_value_the_document_does_not_give_cannot_be_supplied(trace):
+    written = []
+    doc = {"fields": {**NW, "amount": None}}
+    planner = SequencePlanner([Decision("read_invoice", {"file": "nw"})]
+                              + [Decision("submit_payable", NW)])
+    run(Agent(planner, sourced_registry(written, {"nw": doc}), AgentConfig(max_steps=6)),
+        "record it", trace)
+    assert written == []

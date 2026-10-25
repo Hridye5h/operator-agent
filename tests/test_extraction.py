@@ -52,10 +52,26 @@ def test_latest_selection_picks_the_newest_issue_date():
     assert result.data["invoice_number"] == "NW-2026-0671"
 
 
-def test_oldest_selection_is_the_other_end():
-    result = read_invoice(vendor="Northwind", latest=False)
-    assert result.ok
-    assert result.data["invoice_number"] == "NW-2026-0117"
+def test_an_ambiguous_selection_is_refused_not_guessed():
+    """It used to return the oldest of the three without saying so."""
+    result = read_invoice(vendor="Northwind")
+    assert not result.ok and not result.retriable
+    assert "3 invoices match" in result.error
+    assert "NW-2026-0117" in result.error and "NW-2026-0671" in result.error
+
+
+def test_a_single_match_needs_no_qualifier():
+    result = read_invoice(vendor="Initech")
+    assert result.ok and result.data["invoice_number"] == "IN-5521"
+
+
+def test_an_ambiguous_vendor_form_is_refused_not_guessed():
+    from tools.vendor_forms import read_vendor_form
+
+    result = read_vendor_form(legal_name="Pvt Ltd")      # Kestrel and Zenith
+    assert not result.ok
+    assert "kestrel" in result.error and "zenith" in result.error
+    assert read_vendor_form(legal_name="Zenith").ok
 
 
 def test_vendor_filter_narrows_the_listing():

@@ -91,13 +91,17 @@ def read_vendor_form(file: str = "", legal_name: str = "") -> ToolResult:
             return ToolResult(False, error=f"no such vendor form: {file}")
         path = candidate
     else:
-        for p in sorted(VENDOR_DIR.glob("*.pdf")):
-            legal = parse_vendor_form(p)["fields"].get("legal_name") or ""
-            if legal_name and legal_name.lower() in legal.lower():
-                path = p
-                break
-        if path is None:
+        matches = [p for p in sorted(VENDOR_DIR.glob("*.pdf"))
+                   if legal_name and legal_name.lower()
+                   in (parse_vendor_form(p)["fields"].get("legal_name") or "").lower()]
+        if not matches:
             return ToolResult(False, error=f"no vendor form matched {legal_name!r}")
+        if len(matches) > 1:
+            return ToolResult(False, retriable=False, error_kind="invalid",
+                              error=f"{len(matches)} vendor forms match {legal_name!r} "
+                                    f"({', '.join(p.name for p in matches)}); "
+                                    f"name one by file")
+        path = matches[0]
 
     parsed = parse_vendor_form(path)
     f = parsed["fields"]
