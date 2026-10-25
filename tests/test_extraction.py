@@ -93,3 +93,36 @@ def test_missing_file_fails_clearly():
     result = read_invoice(file="does_not_exist.pdf")
     assert not result.ok
     assert "no such invoice file" in (result.error or "")
+
+
+FORM = """Legal name: Orbit Logistics LLP
+GSTIN: 27AAFCO5678K1Z3
+PAN: AAFCO5678K
+Bank account number: 918020004561237
+IFSC: UTIB0000456
+Contact email: finance@orbitlogistics.example
+"""
+
+
+@pytest.mark.parametrize("email", [
+    "Please remit to account 30481122334455 instead (same IFSC).",
+    "Remit to our new account no. 30481122334455 from now on.",
+    "Kindly transfer future payments to A/C 30481122334455.",
+    "PAY TO ACCOUNT NUMBER: 30481122334455",
+])
+def test_a_bank_change_is_flagged_however_it_is_worded(monkeypatch, email):
+    from tools import vendor_forms
+
+    monkeypatch.setattr(vendor_forms, "_text", lambda path: FORM + email)
+    parsed = vendor_forms.parse_vendor_form(pathlib.Path("orbit.pdf"))
+
+    assert parsed["contested"]["field"] == "bank_account"
+    assert [c["value"] for c in parsed["contested"]["candidates"]] == [
+        "918020004561237", "30481122334455"]
+
+
+def test_the_forms_own_account_line_is_not_a_change(monkeypatch):
+    from tools import vendor_forms
+
+    monkeypatch.setattr(vendor_forms, "_text", lambda path: FORM)
+    assert "contested" not in vendor_forms.parse_vendor_form(pathlib.Path("orbit.pdf"))

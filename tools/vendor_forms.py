@@ -26,7 +26,12 @@ PATTERNS = {
     "contact_email": r"Contact email:\s*(\S+@\S+)",
 }
 SUBMITTED = r"Submitted on:\s*(\d{4}-\d{2}-\d{2})"
-EMAILED_ACCOUNT = r"remit to account\s*(\d{9,18})"
+# An instruction to send money to an account, however it is phrased: "remit to
+# account", "Remit to our new account no.", "transfer future payments to A/C".
+# Missing a rephrased one would silently drop the change instead of flagging it.
+EMAILED_ACCOUNT = re.compile(
+    r"\b(?:remit|pay|transfer|send)\b[^.\n]{0,40}?\b(?:account|a/c)\b"
+    r"(?:\s*(?:number|no\.?))?\s*[:\-]?\s*(\d{9,18})", re.I)
 
 
 def _text(path: pathlib.Path) -> str:
@@ -51,7 +56,7 @@ def parse_vendor_form(path: pathlib.Path) -> dict[str, Any]:
     # A bank account supplied outside the signed form, that disagrees with it,
     # is not a correction to apply. It is exactly what an impersonation attack
     # looks like, so it is reported for a human and never resolved here.
-    emailed = re.search(EMAILED_ACCOUNT, text)
+    emailed = EMAILED_ACCOUNT.search(text)
     if emailed and fields.get("bank_account") and emailed.group(1) != fields["bank_account"]:
         out["contested"] = {
             "field": "bank_account",
