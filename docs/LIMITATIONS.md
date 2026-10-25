@@ -117,10 +117,10 @@ closed. What is missing is *who* approves: today the question goes to whoever is
 at the terminal. Real use needs approvals routed to a named role, with
 delegation, timeouts and an audit record of who authorised what.
 
-**5. An evaluation harness.** A scenario suite scoring autonomy, verification
-rate, escalation precision and recovery rate, run on every change. Without it,
-"more reliable" is an opinion. This is the piece I would want most before
-trusting it with anything real.
+**5. Run the evaluation everywhere.** `scripts/evaluate.py` scores every case
+against the database. Next: run it in CI on every change, run it on the live
+model with `--repeat` so a result is a pass rate rather than one lucky run, and
+turn every bug found into a case — each fix so far could be one.
 
 **6. Parallel execution with a shared ledger.** Fan out across documents with
 idempotency on invoice number, so a retry after a partial failure cannot

@@ -289,10 +289,45 @@ survive extraction, the form, the database and verification as a string.
 
 ---
 
+## Evaluation
+
+```bash
+python scripts/evaluate.py                     # 12 cases, deterministic planner (under a minute)
+python scripts/evaluate.py --planner gemini    # the same cases, planned by the live model
+python scripts/evaluate.py --repeat 3          # pass rates over repeated runs
+```
+
+Each case runs against a fresh environment and is scored against the **database
+itself**, not the agent's report. A run passes only if it ended the way it should
+and the ledger and the Vendor Master hold exactly the expected records, field for
+field. The expected records come from the document generators, not from the
+agent's own extraction, which would grade the extractor against itself.
+
+Latest result ([full report](docs/eval/scripted.md)):
+
+| Measure | Deterministic planner |
+|---|---|
+| Cases passed | 12 / 12 |
+| Said "done" while the system of record disagreed | 0 |
+| Wrong or unexpected records written | 0 |
+| Consulted a person when one was needed | 6 / 6 |
+| Did not consult a person without needing to | 5 / 5 |
+| Transient failures recovered from | 8 / 8 |
+
+The cases cover the nine scenarios plus a differently worded request, account
+numbers with leading zeros, the `batch` run (live model only), and a request the
+agent has no tool for. That last case exists because of a real bug: asked to
+*cancel* a payable, the agent recorded it and reported a verified success —
+every guarantee checks how work is done, none whether it is the work that was
+asked for. Procedures now declare the actions they perform. Against the code
+before that fix, the harness reports one false completion and one unsafe write.
+
+---
+
 ## Tests
 
 ```bash
-python -m pytest tests/ -q                # 235 tests, a few seconds
+python -m pytest tests/ -q                # 252 tests, a few seconds
 python -m pytest tests/ -m integration    # + 8 runs against the real app and browser (~2 min)
 ```
 
@@ -304,6 +339,7 @@ python -m pytest tests/ -m integration    # + 8 runs against the real app and br
 | `test_planner.py` | Parsing what a model actually sends (fenced, prose-wrapped, truncated, blocked), the Gemini request shape, how the agent re-prompts an unusable reply, rate-limit waits and the per-model quota fallback |
 | `test_internal_app.py` | The environment's failure modes behave as specified |
 | `test_trace.py` | The run record survives what a model writes: characters the console cannot print, multi-line steps, a run killed mid-write |
+| `test_evaluate.py` | The evaluation's scoring catches what an agent's own report would hide: a wrong amount behind "completed", a record that should not exist, a needless or missing question, an unrecovered failure |
 | `test_integration_browser.py` | Label-based form filling and result reading against the real app; leading zeros through the whole stack; the fraud pattern with and without a person to ask (marked `integration`) |
 | `test_integration_llm.py` | A full run driven by LLM-shaped replies against the real browser, server and verification read-back (marked `integration`) |
 
@@ -322,8 +358,11 @@ tools/              files.py (invoices) · vendor_forms.py (supplier forms)
                     browser.py (label-based perception) · human.py (escalation)
 mockenv/            internal_app/ (FastAPI + SQLite + HTML forms, two systems)
                     invoices/ · vendors/ (generated PDFs)
+scripts/            evaluate.py (scored against the database) · record_llm_demos.py
+                    check_gemini.py (live-model preflight)
 runs/<run-id>/      trace.json · report.md · artifacts/*.png · artifacts/run.webm
 docs/               ARCHITECTURE.md · DECISIONS.md · LIMITATIONS.md · COMPONENTS.md
+                    eval/ (latest evaluation reports) · index.html (run viewer)
 ```
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design,

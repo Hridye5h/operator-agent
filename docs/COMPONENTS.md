@@ -57,6 +57,7 @@ system" is `mockenv/internal_app`, written for this project.
 | Tool registry and `ToolResult` contract | Written for this project (`agent/tools.py`) |
 | Planners, JSON extraction from model output | Written for this project (`agent/llm.py`) |
 | Run trace and report generation | Written for this project (`agent/trace.py`) |
+| Evaluation harness, scored against the database | Written for this project (`scripts/evaluate.py`) |
 | Procedure loading, selection and checking | Written for this project (`agent/procedures.py`) |
 | Company procedures | Written for this project (`company/procedures/*.json`) |
 | Invoice and supplier-form extraction, contested-field detection | Written for this project (`tools/files.py`, `tools/vendor_forms.py`) |

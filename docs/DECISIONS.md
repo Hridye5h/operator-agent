@@ -548,3 +548,43 @@ step rerouted to a person, and one that simply kept calling `ask_human` was
 answered every time, until the step budget ran out. Both now count against
 `max_questions` (five by default); past it the run ends as `escalated`. No
 recorded scenario asks more than once.
+
+---
+
+### 37. A procedure is chosen by the action asked for, not just the topic
+
+Asked to "cancel the Northwind Traders payable NW-2026-0671", the deterministic
+planner selected the procedure that records payables — "payable" was one of its
+triggers — recorded the invoice, and reported a verified success. Every
+guarantee in the loop held, because each one checks *how* the work is done; none
+checks that it is the work that was asked for.
+
+Procedures now declare `actions` (record, enter, book…) and `not_for` (cancel,
+delete, update, whether…). A procedure qualifies only if the goal asks for one of
+its actions and none of its exclusions. With no procedure the deterministic
+planner refuses and nothing is written, and the planner prompt tells a model never
+to substitute a different action.
+
+**Limit:** this is word matching. It stops the common wrong-action requests; it
+does not understand them.
+
+---
+
+### 38. Evaluate against the database, with ground truth from the generators
+
+`scripts/evaluate.py` runs each case in its own process, empties both systems
+first so a case that never starts cannot inherit records, and then reads the
+SQLite database directly. The agent's trace is used for what only it can show —
+how the run ended, whether a person was asked, whether an outage was got past —
+but never for whether the work was done.
+
+The expected records come from the invoice manifest and the vendor generator's
+data, not from the agent's extraction, which would grade the extractor with
+itself. The headline measure is false completions: runs that said "done" while
+the database disagreed. `--repeat` exists for the live model, where one passing
+run says little and a pass rate says something.
+
+The harness was checked against a known failure before it was trusted: with the
+procedure-selection fix (37) reverted, the `wrong_action` case fails with one
+false completion and one unsafe write, and names the record that should not
+exist.
