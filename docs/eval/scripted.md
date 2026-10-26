@@ -1,6 +1,6 @@
 # Evaluation — deterministic planner
 
-2026-10-25 23:19 · 12 cases × 1 · planner: scripted · `python scripts/evaluate.py`
+2026-10-26 20:52 · 12 cases × 1 · planner: scripted · `python scripts/evaluate.py`
 
 Every case is scored against the database itself, not the agent's report.
 
@@ -12,7 +12,7 @@ Every case is scored against the database itself, not the agent's report.
 | Consulted a person when one was needed | 6 / 6 |
 | Did not consult a person without needing to | 5 / 5 |
 | Transient failures recovered from | 8 / 8 |
-| Mean steps · mean seconds per run | 19.3 · 2.9 |
+| Mean steps · mean seconds per run | 19.3 · 1.6 |
 
 | Case | What it checks | Ended | Person consulted | Steps | Result |
 |---|---|---|---|---|---|

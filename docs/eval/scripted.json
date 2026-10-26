@@ -23,7 +23,7 @@
       8
     ],
     "mean_steps": 19.3,
-    "mean_seconds": 2.9
+    "mean_seconds": 1.6
   },
   "results": [
     {
@@ -39,7 +39,7 @@
       "transient_failures": 1,
       "recovered": 1,
       "steps": 20,
-      "seconds": 4.5,
+      "seconds": 2.0,
       "planner": "scripted"
     },
     {
@@ -55,7 +55,7 @@
       "transient_failures": 1,
       "recovered": 1,
       "steps": 20,
-      "seconds": 4.4,
+      "seconds": 2.0,
       "planner": "scripted"
     },
     {
@@ -71,7 +71,7 @@
       "transient_failures": 1,
       "recovered": 1,
       "steps": 23,
-      "seconds": 2.8,
+      "seconds": 1.8,
       "planner": "scripted"
     },
     {
@@ -87,7 +87,7 @@
       "transient_failures": 0,
       "recovered": 0,
       "steps": 13,
-      "seconds": 0.6,
+      "seconds": 0.5,
       "planner": "scripted"
     },
     {
@@ -103,7 +103,7 @@
       "transient_failures": 1,
       "recovered": 1,
       "steps": 22,
-      "seconds": 3.9,
+      "seconds": 2.0,
       "planner": "scripted"
     },
     {
@@ -119,7 +119,7 @@
       "transient_failures": 0,
       "recovered": 0,
       "steps": 15,
-      "seconds": 0.6,
+      "seconds": 0.5,
       "planner": "scripted"
     },
     {
@@ -136,7 +136,7 @@
       "transient_failures": 1,
       "recovered": 1,
       "steps": 39,
-      "seconds": 6.5,
+      "seconds": 3.6,
       "planner": "scripted"
     },
     {
@@ -152,7 +152,7 @@
       "transient_failures": 1,
       "recovered": 1,
       "steps": 20,
-      "seconds": 3.5,
+      "seconds": 2.0,
       "planner": "scripted"
     },
     {
@@ -168,7 +168,7 @@
       "transient_failures": 1,
       "recovered": 1,
       "steps": 20,
-      "seconds": 3.6,
+      "seconds": 2.1,
       "planner": "scripted"
     },
     {
@@ -184,7 +184,7 @@
       "transient_failures": 1,
       "recovered": 1,
       "steps": 23,
-      "seconds": 3.6,
+      "seconds": 1.9,
       "planner": "scripted"
     },
     {
@@ -200,7 +200,7 @@
       "transient_failures": 0,
       "recovered": 0,
       "steps": 13,
-      "seconds": 0.7,
+      "seconds": 0.5,
       "planner": "scripted"
     },
     {
@@ -216,7 +216,7 @@
       "transient_failures": 0,
       "recovered": 0,
       "steps": 4,
-      "seconds": 0.6,
+      "seconds": 0.5,
       "planner": "scripted"
     }
   ]
